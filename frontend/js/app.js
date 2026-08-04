@@ -848,7 +848,7 @@ actions.showNewMaterialForm = () => {
   document.getElementById('newMatBox').innerHTML = `<div class="card">
     <label>Name</label><input id="nm_name">
     <label>Unit (kg, roll, litre...)</label><input id="nm_unit" value="kg">
-    <label>Sold in sacks? Weight per sack in kg (leave blank if not)</label><input id="nm_sack" type="number" step="0.01" placeholder="e.g. 50">
+    <label>Sold in sacks? Usual weight per sack in kg (leave blank if not - this is just a starting suggestion, each purchase/input can use a different sack size for that supplier)</label><input id="nm_sack" type="number" step="0.01" placeholder="e.g. 50">
     <label>Warn when stock falls below</label><input id="nm_low" type="number" step="0.01" value="0">
     <div id="nmMsg"></div>
     <button class="btn block" style="margin-top:8px" onclick="actions.newMaterial()">Save</button>
@@ -873,7 +873,7 @@ actions.editMaterial = async (id) => {
     <h3>Edit ${esc(m.name)}</h3>
     <label>Name</label><input id="em_name" value="${esc(m.name)}">
     <label>Unit</label><input id="em_unit" value="${esc(m.unit)}">
-    <label>Sold in sacks? Weight per sack in kg (leave blank if not)</label><input id="em_sack" type="number" step="0.01" value="${m.sack_weight_kg || ''}" placeholder="e.g. 50">
+    <label>Sold in sacks? Usual weight per sack in kg (leave blank if not - this is just a starting suggestion, each purchase/input can use a different sack size for that supplier)</label><input id="em_sack" type="number" step="0.01" value="${m.sack_weight_kg || ''}" placeholder="e.g. 50">
     <label>How much is in stock right now (in ${esc(m.unit)})</label><input id="em_stock" type="number" step="0.01" value="${m.stock_qty}">
     <label>Cost, per ${esc(m.unit)}</label><input id="em_cost" type="number" step="0.01" value="${m.avg_cost}">
     <label>Warn when stock falls below</label><input id="em_low" type="number" step="0.01" value="${m.low_stock_threshold}">
@@ -988,12 +988,15 @@ async function pageStageInputInner() {
     <select id="in_machine">${machines.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select>
     <label>What you put in (e.g. Plastic Beads)</label>
     <select id="in_material" onchange="actions.onInputMaterialChange()">${materials.map(m => `<option value="${m.id}" data-sack="${m.sack_weight_kg || ''}">${esc(m.name)} (${esc(m.unit)}) - ${m.stock_qty} left${m.sack_weight_kg ? ` / ${(m.stock_qty / m.sack_weight_kg).toFixed(1)} sacks` : ''}</option>`).join('')}</select>
+    <label><input type="checkbox" id="in_use_sacks" style="width:auto;display:inline-block;vertical-align:middle" onchange="actions.toggleInputSackFields()"> Measure this in sacks</label>
     <div id="in_sack_field" style="display:none">
-      <label>How many sacks you put in</label>
+      <label>How many sacks</label>
       <input id="in_sacks" type="number" step="1">
+      <label>Weight per sack (kg) - this supplier's sack size</label>
+      <input id="in_sack_weight" type="number" step="0.01" placeholder="e.g. 50">
     </div>
     <div id="in_qty_field">
-      <label>How much you put in</label>
+      <label>How much you put in (kg)</label>
       <input id="in_qty" type="number" step="0.01">
     </div>
     <label>What came out (e.g. Plastic Roll)</label>
@@ -1036,9 +1039,15 @@ async function pageStageInputInner() {
 }
 actions.onInputMaterialChange = () => {
   const opt = document.getElementById('in_material').selectedOptions[0];
-  const sackWeight = opt ? Number(opt.dataset.sack) : 0;
-  document.getElementById('in_sack_field').style.display = sackWeight ? '' : 'none';
-  document.getElementById('in_qty_field').style.display = sackWeight ? 'none' : '';
+  const defaultSack = opt ? Number(opt.dataset.sack) : 0;
+  document.getElementById('in_sack_weight').value = defaultSack || '';
+  document.getElementById('in_use_sacks').checked = !!defaultSack;
+  actions.toggleInputSackFields();
+};
+actions.toggleInputSackFields = () => {
+  const useSacks = document.getElementById('in_use_sacks').checked;
+  document.getElementById('in_sack_field').style.display = useSacks ? '' : 'none';
+  document.getElementById('in_qty_field').style.display = useSacks ? 'none' : '';
 };
 actions.logInput = async () => {
   const inputMat = document.getElementById('in_material').value;
@@ -1047,12 +1056,12 @@ actions.logInput = async () => {
     document.getElementById('inMsg').innerHTML = `<div class="msg error">"What you put in" and "what came out" must be different.</div>`;
     return;
   }
-  const inOpt = document.getElementById('in_material').selectedOptions[0];
-  const sackWeight = inOpt ? Number(inOpt.dataset.sack) : 0;
+  const useSacks = document.getElementById('in_use_sacks').checked;
   let inputQty;
-  if (sackWeight) {
+  if (useSacks) {
     const sacks = Number(document.getElementById('in_sacks').value) || 0;
-    if (!sacks) { document.getElementById('inMsg').innerHTML = `<div class="msg error">Type how many sacks.</div>`; return; }
+    const sackWeight = Number(document.getElementById('in_sack_weight').value) || 0;
+    if (!sacks || !sackWeight) { document.getElementById('inMsg').innerHTML = `<div class="msg error">Type how many sacks and the weight per sack.</div>`; return; }
     inputQty = sacks * sackWeight;
   } else {
     inputQty = document.getElementById('in_qty').value;
@@ -1247,17 +1256,20 @@ async function pagePurchases() {
     <label>Supplier</label>
     <select id="pu_supplier"><option value="">(none)</option>${suppliers.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select>
 
+    <label><input type="checkbox" id="pu_use_sacks" style="width:auto;display:inline-block;vertical-align:middle" onchange="actions.togglePurchaseSackFields()"> Measure this purchase in sacks</label>
     <div id="pu_sack_fields" style="display:none">
       <label>Number of sacks</label>
       <input id="pu_sacks" type="number" step="1">
+      <label>Weight per sack (kg) - this supplier's sack size</label>
+      <input id="pu_sack_weight" type="number" step="0.01" placeholder="e.g. 50">
       <label>Cost per sack</label>
       <input id="pu_sack_cost" type="number" step="0.01">
       <p style="color:var(--muted);font-size:12px">This works out the kg and cost per kg for you.</p>
     </div>
     <div id="pu_plain_fields">
-      <label>Quantity</label>
+      <label>Quantity (kg)</label>
       <input id="pu_qty" type="number" step="0.01">
-      <label>Unit cost</label>
+      <label>Unit cost (per kg)</label>
       <input id="pu_cost" type="number" step="0.01">
     </div>
 
@@ -1284,20 +1296,26 @@ actions.newSupplier = async () => {
 };
 actions.onPurchaseMaterialChange = () => {
   const opt = document.getElementById('pu_material').selectedOptions[0];
-  const sackWeight = opt ? Number(opt.dataset.sack) : 0;
-  document.getElementById('pu_sack_fields').style.display = sackWeight ? '' : 'none';
-  document.getElementById('pu_plain_fields').style.display = sackWeight ? 'none' : '';
+  const defaultSack = opt ? Number(opt.dataset.sack) : 0;
+  document.getElementById('pu_sack_weight').value = defaultSack || '';
+  document.getElementById('pu_use_sacks').checked = !!defaultSack;
+  actions.togglePurchaseSackFields();
+};
+actions.togglePurchaseSackFields = () => {
+  const useSacks = document.getElementById('pu_use_sacks').checked;
+  document.getElementById('pu_sack_fields').style.display = useSacks ? '' : 'none';
+  document.getElementById('pu_plain_fields').style.display = useSacks ? 'none' : '';
 };
 actions.logPurchase = async () => {
   const paidVal = document.getElementById('pu_paid').value;
-  const opt = document.getElementById('pu_material').selectedOptions[0];
-  const sackWeight = opt ? Number(opt.dataset.sack) : 0;
+  const useSacks = document.getElementById('pu_use_sacks').checked;
 
   let qty, unit_cost;
-  if (sackWeight) {
+  if (useSacks) {
     const sacks = Number(document.getElementById('pu_sacks').value) || 0;
+    const sackWeight = Number(document.getElementById('pu_sack_weight').value) || 0;
     const sackCost = Number(document.getElementById('pu_sack_cost').value) || 0;
-    if (!sacks) { document.getElementById('puMsg').innerHTML = `<div class="msg error">Type how many sacks.</div>`; return; }
+    if (!sacks || !sackWeight) { document.getElementById('puMsg').innerHTML = `<div class="msg error">Type how many sacks and the weight per sack.</div>`; return; }
     qty = sacks * sackWeight;
     unit_cost = sackCost / sackWeight;
   } else {
