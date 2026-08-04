@@ -53,6 +53,15 @@ async function boot() {
 
 window.addEventListener('hashchange', () => { if (API.token) renderApp(); });
 
+// Changing location.hash fires 'hashchange' asynchronously, which would
+// call renderApp() a second time on top of an explicit call below it -
+// a race that can silently drop things like the one-time welcome banner.
+// Route every navigation through here so there's ever only one render.
+function navigate(hash) {
+  if (location.hash === hash) renderApp();
+  else location.hash = hash;
+}
+
 // ---------------- Setup wizard ----------------
 // This is the screen where the business name / industry gets entered,
 // exactly once, the first time the app is opened after install.
@@ -99,7 +108,7 @@ actions.submitSetup = async () => {
   try {
     const data = await API.post('/auth/setup', body);
     API.setSession(data.token, data.user);
-    location.hash = '#/dashboard';
+    state.pendingWelcome = { name: data.user.name, firstLogin: true };
     boot();
   } catch (e) {
     document.getElementById('setupMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`;
@@ -114,7 +123,7 @@ async function renderLogin() {
   app.innerHTML = `
   <div class="login-screen"><div class="login-card card">
     <h2>${esc(state.settings.business_name || 'PlastPOS')}</h2>
-    <p style="color:var(--muted);font-size:13px">Pick your name, enter your PIN.</p>
+    <p style="color:var(--muted);font-size:13px">Tap your name. Type your PIN. Tap Log in.</p>
     <div id="loginMsg"></div>
     <div class="user-pick">
       ${users.map(u => `<button id="u_${u.id}" onclick="actions.pickUser(${u.id})">${esc(u.name)} <span style="color:var(--muted);font-size:11px">(${u.role})</span></button>`).join('')}
@@ -122,6 +131,7 @@ async function renderLogin() {
     <label>PIN</label>
     <input id="l_pin" type="password" inputmode="numeric" maxlength="6" placeholder="PIN">
     <button class="btn block" style="margin-top:14px" onclick="actions.doLogin()">Log in</button>
+    <button class="btn secondary block" style="margin-top:8px" onclick="actions.forgotPin()">I forgot my PIN / it's wrong</button>
   </div></div>`;
 }
 actions.pickUser = (id) => {
@@ -130,12 +140,21 @@ actions.pickUser = (id) => {
 };
 actions.doLogin = async () => {
   const pin = document.getElementById('l_pin').value.trim();
-  if (!state.pickedUserId) { document.getElementById('loginMsg').innerHTML = `<div class="msg error">Pick your name first.</div>`; return; }
+  if (!state.pickedUserId) { document.getElementById('loginMsg').innerHTML = `<div class="msg error">Tap your name first.</div>`; return; }
   try {
     const data = await API.post('/auth/login', { userId: state.pickedUserId, pin });
     API.setSession(data.token, data.user);
-    location.hash = LANDING[data.user.role] || '#/dashboard';
-    renderApp();
+    state.pendingWelcome = { name: data.user.name, firstLogin: data.firstLogin };
+    navigate(LANDING[data.user.role] || '#/dashboard');
+  } catch (e) {
+    document.getElementById('loginMsg').innerHTML = `<div class="msg error">Wrong PIN. Try again, or tap "I forgot my PIN" below.</div>`;
+  }
+};
+actions.forgotPin = async () => {
+  if (!state.pickedUserId) { document.getElementById('loginMsg').innerHTML = `<div class="msg error">Tap your name first.</div>`; return; }
+  try {
+    await API.post('/auth/request-pin-reset', { userId: state.pickedUserId });
+    document.getElementById('loginMsg').innerHTML = `<div class="msg ok">Done. The admin has been told. Ask them to give you a new PIN.</div>`;
   } catch (e) {
     document.getElementById('loginMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`;
   }
@@ -155,9 +174,9 @@ const LANDING = { admin: '#/dashboard', cashier: '#/pos', input: '#/input', cutt
 const NAV = [
   { path: '#/dashboard', label: 'Dashboard', roles: ['admin', 'cashier', 'input', 'cutting', 'distribution'] },
   { path: '#/pos', label: 'POS', roles: ['admin', 'cashier'] },
-  { path: '#/input', label: 'Input', roles: ['admin', 'input'] },
-  { path: '#/manufacturing', label: 'Cutting', roles: ['admin', 'cutting'] },
-  { path: '#/dispatch', label: 'Distribution', roles: ['admin', 'distribution'] },
+  { path: '#/input', label: 'Plant Operator', roles: ['admin', 'input'] },
+  { path: '#/manufacturing', label: 'Packaging', roles: ['admin', 'cutting'] },
+  { path: '#/dispatch', label: 'Picking', roles: ['admin', 'distribution'] },
   { path: '#/inventory', label: 'Inventory', roles: ['admin'] },
   { path: '#/purchases', label: 'Purchases', roles: ['admin', 'input'] },
   { path: '#/customers', label: 'Customers', roles: ['admin', 'cashier'] },
@@ -198,10 +217,33 @@ async function renderApp() {
     else if (route.startsWith('#/reports')) main.innerHTML = await pageReports();
     else if (route.startsWith('#/settings')) main.innerHTML = await pageSettings();
     else if (route.startsWith('#/receipt/')) main.innerHTML = await pageReceipt(route.split('/')[2]);
+    else if (route.startsWith('#/delivery-receipt/')) main.innerHTML = await pageDeliveryReceipt(route.split('/')[2]);
     else main.innerHTML = await pageDashboard();
   } catch (e) {
     main.innerHTML = `<div class="msg error">${esc(e.message)}</div>`;
   }
+
+  // Shown once, right after a login action - never again on later page
+  // changes within the same session, so it can't get spammy.
+  if (state.pendingWelcome) {
+    main.innerHTML = welcomeBanner(state.pendingWelcome) + main.innerHTML;
+    state.pendingWelcome = null;
+  }
+}
+
+function timeGreeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
+}
+function welcomeBanner(w) {
+  return `
+  <div class="card" style="border:1px solid var(--teal);background:#f0fdfa">
+    ${w.firstLogin ? `<p style="margin:0 0 4px;font-weight:700">Hello ${esc(w.name)}, welcome to ${esc(state.settings.industry || state.settings.business_name || 'the team')}!</p>` : ''}
+    <p style="margin:0 0 4px;font-weight:700">${timeGreeting()}, ${esc(w.name)}</p>
+    <p style="margin:0;color:var(--muted)">${esc(state.settings.welcome_tagline || 'JITUME MZEE... MUKUCHU NDIO FORM ... To God be the glory')}</p>
+  </div>`;
 }
 
 // ---------------- Dashboard ----------------
@@ -210,16 +252,47 @@ async function pageDashboard() {
   return pageWorkerDashboard();
 }
 
+function aggregateSeries(series, view) {
+  if (view === 'daily') return series.slice(-14);
+  const buckets = {};
+  for (const d of series) {
+    let key;
+    if (view === 'weekly') {
+      const date = new Date(d.day + 'T00:00:00');
+      const dow = date.getDay() || 7;
+      const monday = new Date(date);
+      monday.setDate(date.getDate() - dow + 1);
+      key = monday.toISOString().slice(0, 10);
+    } else {
+      key = d.day.slice(0, 7); // YYYY-MM
+    }
+    if (!buckets[key]) buckets[key] = { day: key, produced: 0, dispatched: 0, revenue: 0, cogs: 0, expenses: 0, profit: 0 };
+    buckets[key].produced += d.produced;
+    buckets[key].dispatched += d.dispatched;
+    buckets[key].revenue += d.revenue;
+    buckets[key].cogs += d.cogs;
+    buckets[key].expenses += d.expenses;
+    buckets[key].profit += d.profit;
+  }
+  return Object.values(buckets).sort((a, b) => a.day.localeCompare(b.day)).slice(-12);
+}
+
 async function pageAdminDashboard() {
-  const [tipsData, lowStock, cash, status, daily, disputes, shiftsToday] = await Promise.all([
+  const view = state.chartView || 'daily';
+  const daysNeeded = view === 'daily' ? 14 : view === 'weekly' ? 90 : 366;
+  const [tipsData, lowStock, cash, status, dailyRaw, disputes, shiftsToday, pinRequests, runningCosts] = await Promise.all([
     API.get('/tips').catch(() => ({ tips: [] })),
     API.get('/inventory/low-stock').catch(() => ({ products: [], materials: [] })),
     API.get('/cashbook/summary').catch(() => null),
     API.get('/stages/today-status').catch(() => ({ stages: [] })),
-    API.get('/reports/daily?days=14').catch(() => ({ series: [] })),
+    API.get(`/reports/daily?days=${daysNeeded}`).catch(() => ({ series: [] })),
     API.get('/payroll/disputes').catch(() => []),
     API.get('/shifts/today').catch(() => []),
+    API.get('/auth/pin-reset-requests').catch(() => []),
+    API.get('/reports/running-costs').catch(() => null),
   ]);
+  const daily = { series: aggregateSeries(dailyRaw.series, view) };
+  const chartLabelFn = view === 'monthly' ? (d => d.day) : (d => shortDay(d.day));
 
   function activityLine(role, e) {
     if (role === 'input') return `${esc(e.operator_name || '?')} used ${e.input_qty}${esc(e.input_unit || '')} ${esc(e.input_material_name)} -> produced ${e.output_qty}${esc(e.output_unit || '')} ${esc(e.output_material_name)} <span style="color:var(--muted)">(${dt(e.created_at)})</span>`;
@@ -270,21 +343,50 @@ async function pageAdminDashboard() {
 
   <div class="card">
     <h3>Shifts today</h3>
-    ${shiftsToday.length ? `<div class="table-wrap"><table><tr><th>Name</th><th>Section</th><th>Clocked in</th><th>Clocked out</th></tr>
-      ${shiftsToday.map(s => `<tr><td>${esc(s.name)}</td><td>${esc(ROLE_LABELS[s.role] || s.role)}</td><td>${dt(s.clock_in)}</td><td>${s.clock_out ? dt(s.clock_out) : '<span class="pill ok">Still in</span>'}</td></tr>`).join('')}
+    <p style="color:var(--muted);font-size:12px;margin-top:-4px">Who is on shift, and if they have logged any work yet.</p>
+    ${shiftsToday.length ? `<div class="table-wrap"><table><tr><th>Name</th><th>Section</th><th>Clocked in</th><th>Clocked out</th><th>Worked?</th></tr>
+      ${shiftsToday.map(s => `<tr><td>${esc(s.name)}</td><td>${esc(ROLE_LABELS[s.role] || s.role)}</td><td>${dt(s.clock_in)}</td>
+        <td>${s.clock_out ? dt(s.clock_out) : '<span class="pill ok">Still in</span>'}</td>
+        <td>${s.worked ? '<span class="pill ok">Yes</span>' : '<span class="pill warn">Not yet</span>'}</td></tr>`).join('')}
     </table></div>` : '<p style="color:var(--muted)">Nobody has clocked in today</p>'}
+    ${shiftsToday.some(s => !s.worked) ? `<div class="tip warning" style="margin-top:10px">${shiftsToday.filter(s => !s.worked).map(s => esc(s.name)).join(', ')} clocked in but has not logged any work yet today.</div>` : ''}
   </div>
 
   <div class="card">
-    <h3>Production per day (14 days)</h3>
-    ${svgLineChart(daily.series, 'produced', { color: '#0f766e' })}
+    <h3>Production per day</h3>
+    <div class="grid cols-3" style="margin-bottom:10px">
+      <button class="btn ${view === 'daily' ? '' : 'secondary'}" onclick="actions.setChartView('daily')">Daily</button>
+      <button class="btn ${view === 'weekly' ? '' : 'secondary'}" onclick="actions.setChartView('weekly')">Weekly</button>
+      <button class="btn ${view === 'monthly' ? '' : 'secondary'}" onclick="actions.setChartView('monthly')">Monthly</button>
+    </div>
+    ${svgLineChart(daily.series, 'produced', { color: '#0f766e', labelFn: chartLabelFn })}
   </div>
 
   <div class="card">
-    <h3>Profit / loss per day (14 days)</h3>
-    ${svgLineChart(daily.series, 'profit', { color: '#dc2626' })}
-    <p style="color:var(--muted);font-size:11px;margin-top:6px">Profit = sales revenue - (units sold x each product's set cost) - manual expenses. Approximate, not full accounting.</p>
+    <h3>Money made vs money spent</h3>
+    ${svgLineChart(daily.series, 'profit', { color: '#dc2626', labelFn: chartLabelFn })}
+    <p style="color:var(--muted);font-size:11px;margin-top:6px">This line is: money from sales, minus what the bags cost to make, minus other spending. It is a close number, not an exact accountant's number.</p>
   </div>
+
+  <div class="card">
+    <h3>What it cost to run the plant today</h3>
+    ${runningCosts ? `
+    <div class="stat-row">
+      <div class="stat"><div class="value">${money(runningCosts.materials)}</div><div class="label">Materials used</div></div>
+      <div class="stat"><div class="value">${money(runningCosts.wages)}</div><div class="label">Wages paid</div></div>
+      <div class="stat"><div class="value">${money(runningCosts.electricity)}</div><div class="label">Electricity</div></div>
+      <div class="stat"><div class="value">${money(runningCosts.expenses)}</div><div class="label">Other spending</div></div>
+    </div>
+    <p style="margin-top:10px;font-weight:700">Total today: ${money(runningCosts.total)}</p>
+    ` : '<p style="color:var(--muted)">No data yet</p>'}
+  </div>
+
+  ${pinRequests.length ? `
+  <div class="card" style="border:1px solid var(--warn)">
+    <h3 style="color:var(--warn)">People who need a new PIN</h3>
+    ${pinRequests.map(r => `<div class="tip warning">${esc(r.name)} (${esc(ROLE_LABELS[r.role] || r.role)}) cannot log in.
+      <div style="margin-top:6px"><button class="btn secondary" onclick="actions.resetUserPin(${r.user_id},'${esc(r.name)}')">Give them a new PIN</button></div></div>`).join('')}
+  </div>` : ''}
 
   <div class="card">
     <h3>Low stock - finished goods</h3>
@@ -295,6 +397,14 @@ async function pageAdminDashboard() {
     ${lowStock.materials.length ? lowStock.materials.map(m => `<div>${esc(m.name)} - ${m.stock_qty}${esc(m.unit)} left</div>`).join('') : '<p style="color:var(--muted)">None</p>'}
   </div>`;
 }
+actions.setChartView = (view) => { state.chartView = view; renderApp(); };
+actions.resetUserPin = async (userId, name) => {
+  const pin = prompt(`New PIN for ${name} (4 numbers is easiest):`);
+  if (!pin) return;
+  await API.put(`/auth/users/${userId}/reset-pin`, { pin });
+  alert(`Done. Tell ${name} their new PIN is ${pin}.`);
+  renderApp();
+};
 
 async function pageWorkerDashboard() {
   const [tipsData, me, shift] = await Promise.all([
@@ -347,6 +457,25 @@ async function pageWorkerDashboard() {
 }
 actions.clockIn = async () => { try { await API.post('/shifts/clock-in'); renderApp(); } catch (e) { alert(e.message); } };
 actions.clockOut = async () => { try { await API.post('/shifts/clock-out'); renderApp(); } catch (e) { alert(e.message); } };
+
+// Locks a work page behind "on shift" - a worker must press Start shift
+// before they can log anything, and End shift closes it again. Admin sees
+// exactly when each person started and stopped (Dashboard > Shifts today).
+async function withShiftGate(contentFn) {
+  const shift = await API.get('/shifts/status').catch(() => null);
+  if (shift && !shift.clockedIn) {
+    return `<div class="card">
+      <h2>You are not on shift yet</h2>
+      <p style="color:var(--muted)">Press the button below when you start work. The admin will see the time you started.</p>
+      <button class="btn block" onclick="actions.clockIn()">Start my shift</button>
+    </div>`;
+  }
+  const bar = shift ? `<div class="card" style="padding:10px 14px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+    <span>On shift since ${dt(shift.current.clock_in)}</span>
+    <button class="btn secondary" onclick="actions.clockOut()">End my shift</button>
+  </div>` : '';
+  return bar + await contentFn();
+}
 actions.enableAlarm = async () => {
   if (!('Notification' in window)) { alert('Notifications are not supported on this browser.'); return; }
   const perm = await Notification.requestPermission();
@@ -413,6 +542,10 @@ actions.disputePayment = async (id) => {
 
 // ---------------- POS ----------------
 async function pagePOS() {
+  if (API.user.role !== 'admin') return withShiftGate(pagePOSInner);
+  return pagePOSInner();
+}
+async function pagePOSInner() {
   const products = await API.get('/inventory/products');
   const customers = await API.get('/customers').catch(() => []);
   return `
@@ -501,8 +634,7 @@ actions.checkout = async () => {
   try {
     const sale = await API.post('/sales', body);
     state.cart = [];
-    location.hash = '#/receipt/' + sale.id;
-    renderApp();
+    navigate('#/receipt/' + sale.id);
   } catch (e) {
     document.getElementById('posMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`;
   }
@@ -557,64 +689,183 @@ actions.shareReceipt = async () => {
   }
 };
 
+// Delivery slip for Picking - same idea as the sale receipt, but for a
+// delivery instead of a shop sale, so the driver has something to show.
+async function pageDeliveryReceipt(id) {
+  const d = await API.get('/stages/dispatch/' + id);
+  const biz = state.settings;
+  const shareText = `${biz.business_name}\n${biz.phone || ''}\nDelivery slip\n${dt(d.dispatched_at)}\n\n${d.qty} x ${d.product_name} (${d.size})\nTo: ${d.destination_person || ''} ${d.destination_place ? '- ' + d.destination_place : ''}\n${d.vehicle ? `Vehicle: ${d.vehicle}\n` : ''}${d.amount_collected > 0 ? `Collected: ${money(d.amount_collected)} (${d.payment_method || ''})\n` : 'Not paid yet\n'}`;
+  setTimeout(() => { window.__receiptShareText = shareText; }, 0);
+
+  return `
+  <div class="receipt" id="receiptBox">
+    <div style="text-align:center">
+      <b>${esc(biz.business_name || '')}</b><br>
+      ${esc(biz.address || '')}<br>
+      ${esc(biz.phone || '')}
+    </div>
+    <div class="line"></div>
+    Delivery slip<br>
+    Date: ${dt(d.dispatched_at)}<br>
+    Taken by: ${esc(d.operator_name || '')}<br>
+    <div class="line"></div>
+    <div class="row"><span>${esc(d.product_name)} (${esc(d.size)})</span><span>x${d.qty}</span></div>
+    To: ${esc(d.destination_person || '')}<br>
+    ${d.destination_place ? `Place: ${esc(d.destination_place)}<br>` : ''}
+    ${d.vehicle ? `Vehicle: ${esc(d.vehicle)}<br>` : ''}
+    <div class="line"></div>
+    ${d.amount_collected > 0
+      ? `<div class="row"><span>Collected</span><span>${money(d.amount_collected)} ${esc(d.payment_method || '')}</span></div>`
+      : `<div style="text-align:center">Not paid yet</div>`}
+    <div class="line"></div>
+    <div style="text-align:center">Thank you!</div>
+  </div>
+  <div class="no-print" style="max-width:320px;margin:12px auto;display:flex;gap:8px">
+    <button class="btn secondary" style="flex:1" onclick="window.print()">Print</button>
+    <button class="btn" style="flex:1" onclick="actions.shareReceipt()">Share (WhatsApp/SMS)</button>
+  </div>
+  <div class="no-print" style="max-width:320px;margin:0 auto"><a href="#/dispatch" class="btn secondary block">Back to deliveries</a></div>`;
+}
+
 // ---------------- Inventory ----------------
 async function pageInventory() {
   const [products, materials] = await Promise.all([API.get('/inventory/products'), API.get('/inventory/materials')]);
   const isAdmin = API.user.role === 'admin';
   return `
   <div class="card">
-    <h2>Finished goods</h2>
+    <h2>Finished bags</h2>
     <div class="table-wrap"><table>
-      <tr><th>Product</th><th>Size</th><th>Price</th><th>Stock</th>${isAdmin ? '<th>Adjust</th>' : ''}</tr>
+      <tr><th>Product</th><th>Size</th><th>Price</th><th>In stock</th>${isAdmin ? '<th></th>' : ''}</tr>
       ${products.map(p => `<tr>
         <td>${esc(p.name)}</td><td>${esc(p.size)}</td><td>${money(p.unit_price)}</td>
         <td>${p.stock_qty <= p.low_stock_threshold ? `<span class="pill warn">${p.stock_qty}</span>` : p.stock_qty}</td>
-        ${isAdmin ? `<td><button class="btn secondary" onclick="actions.adjustStock('product',${p.id},'${esc(p.name)}')">+/-</button></td>` : ''}
+        ${isAdmin ? `<td><button class="btn secondary" onclick="actions.editProduct(${p.id})">Edit</button></td>` : ''}
       </tr>`).join('')}
     </table></div>
-    ${isAdmin ? `<button class="btn secondary" style="margin-top:10px" onclick="actions.newProduct()">Add product</button>` : ''}
+    <div id="prodEditBox"></div>
+    ${isAdmin ? `<button class="btn secondary" style="margin-top:10px" onclick="actions.showNewProductForm()">Add a new bag size</button><div id="newProdBox"></div>` : ''}
   </div>
   <div class="card">
     <h2>Raw materials</h2>
+    <p style="color:var(--muted);font-size:13px">Press Edit to type in how much you have and what it cost - no popup boxes.</p>
     <div class="table-wrap"><table>
-      <tr><th>Material</th><th>Unit</th><th>Stock</th><th>Avg cost</th>${isAdmin ? '<th>Adjust</th>' : ''}</tr>
+      <tr><th>Material</th><th>Unit</th><th>In stock</th><th>Cost each</th>${isAdmin ? '<th></th>' : ''}</tr>
       ${materials.map(m => `<tr>
         <td>${esc(m.name)}</td><td>${esc(m.unit)}</td>
         <td>${m.stock_qty <= m.low_stock_threshold ? `<span class="pill warn">${m.stock_qty}</span>` : m.stock_qty}</td>
         <td>${money(m.avg_cost)}</td>
-        ${isAdmin ? `<td><button class="btn secondary" onclick="actions.adjustStock('material',${m.id},'${esc(m.name)}')">+/-</button></td>` : ''}
+        ${isAdmin ? `<td><button class="btn secondary" onclick="actions.editMaterial(${m.id})">Edit</button></td>` : ''}
       </tr>`).join('')}
     </table></div>
-    ${isAdmin ? `<button class="btn secondary" style="margin-top:10px" onclick="actions.newMaterial()">Add material</button>` : ''}
+    <div id="matEditBox"></div>
+    ${isAdmin ? `<button class="btn secondary" style="margin-top:10px" onclick="actions.showNewMaterialForm()">Add a new material</button><div id="newMatBox"></div>` : ''}
   </div>
-  ${isAdmin ? `<div class="card"><h2>Bill of Materials</h2>
-    <p style="color:var(--muted);font-size:13px">How much raw material each bag size consumes. Used to auto-deduct stock and cost each production run.</p>
-    <label>Product</label>
+  ${isAdmin ? `<div class="card"><h2>How much material each bag uses</h2>
+    <p style="color:var(--muted);font-size:13px">This is how the app knows how much material to take away, and what each bag costs, every time Packaging logs a batch.</p>
+    <label>Bag size</label>
     <select id="bom_product" onchange="actions.loadBom()">${products.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
     <div id="bomBox"></div>
   </div>` : ''}`;
 }
+actions.showNewProductForm = () => {
+  document.getElementById('newProdBox').innerHTML = `<div class="card">
+    <label>Name (e.g. Paper Bag 1kg)</label><input id="np_name">
+    <label>Size label (e.g. 1kg)</label><input id="np_size">
+    <label>Selling price</label><input id="np_price" type="number" step="0.01">
+    <label>Warn when stock falls below</label><input id="np_low" type="number" step="0.01" value="0">
+    <div id="npMsg"></div>
+    <button class="btn block" style="margin-top:8px" onclick="actions.newProduct()">Save</button>
+  </div>`;
+};
 actions.newProduct = async () => {
-  const name = prompt('Product name (e.g. Paper Bag 1kg):'); if (!name) return;
-  const size = prompt('Size label (e.g. 1kg):') || '';
-  const unit_price = Number(prompt('Selling price:') || 0);
-  const low_stock_threshold = Number(prompt('Low-stock alert threshold:') || 0);
-  await API.post('/inventory/products', { name, size, unit_price, low_stock_threshold });
-  renderApp();
+  const name = document.getElementById('np_name').value.trim();
+  const size = document.getElementById('np_size').value.trim();
+  const unit_price = Number(document.getElementById('np_price').value) || 0;
+  const low_stock_threshold = Number(document.getElementById('np_low').value) || 0;
+  if (!name) { document.getElementById('npMsg').innerHTML = `<div class="msg error">Type a name.</div>`; return; }
+  try {
+    await API.post('/inventory/products', { name, size, unit_price, low_stock_threshold });
+    renderApp();
+  } catch (e) { document.getElementById('npMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`; }
+};
+actions.editProduct = async (id) => {
+  const p = (await API.get('/inventory/products')).find(x => x.id === id);
+  if (!p) return;
+  document.getElementById('prodEditBox').innerHTML = `<div class="card">
+    <h3>Edit ${esc(p.name)}</h3>
+    <label>Name</label><input id="ep_name" value="${esc(p.name)}">
+    <label>Size label</label><input id="ep_size" value="${esc(p.size)}">
+    <label>Selling price</label><input id="ep_price" type="number" step="0.01" value="${p.unit_price}">
+    <label>How many are in stock right now</label><input id="ep_stock" type="number" step="1" value="${p.stock_qty}">
+    <label>Warn when stock falls below</label><input id="ep_low" type="number" step="1" value="${p.low_stock_threshold}">
+    <div id="epMsg"></div>
+    <div class="grid cols-2" style="margin-top:8px">
+      <button class="btn" onclick="actions.saveProduct(${id})">Save</button>
+      <button class="btn secondary" onclick="document.getElementById('prodEditBox').innerHTML=''">Cancel</button>
+    </div>
+  </div>`;
+};
+actions.saveProduct = async (id) => {
+  const body = {
+    name: document.getElementById('ep_name').value,
+    size: document.getElementById('ep_size').value,
+    unit_price: Number(document.getElementById('ep_price').value),
+    stock_qty: Number(document.getElementById('ep_stock').value),
+    low_stock_threshold: Number(document.getElementById('ep_low').value),
+  };
+  try {
+    await API.put('/inventory/products/' + id, body);
+    renderApp();
+  } catch (e) { document.getElementById('epMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`; }
+};
+actions.showNewMaterialForm = () => {
+  document.getElementById('newMatBox').innerHTML = `<div class="card">
+    <label>Name</label><input id="nm_name">
+    <label>Unit (kg, roll, litre...)</label><input id="nm_unit" value="kg">
+    <label>Warn when stock falls below</label><input id="nm_low" type="number" step="0.01" value="0">
+    <div id="nmMsg"></div>
+    <button class="btn block" style="margin-top:8px" onclick="actions.newMaterial()">Save</button>
+  </div>`;
 };
 actions.newMaterial = async () => {
-  const name = prompt('Material name:'); if (!name) return;
-  const unit = prompt('Unit (kg, roll, litre...):') || 'kg';
-  const low_stock_threshold = Number(prompt('Low-stock alert threshold:') || 0);
-  await API.post('/inventory/materials', { name, unit, low_stock_threshold });
-  renderApp();
+  const name = document.getElementById('nm_name').value.trim();
+  const unit = document.getElementById('nm_unit').value.trim() || 'kg';
+  const low_stock_threshold = Number(document.getElementById('nm_low').value) || 0;
+  if (!name) { document.getElementById('nmMsg').innerHTML = `<div class="msg error">Type a name.</div>`; return; }
+  try {
+    await API.post('/inventory/materials', { name, unit, low_stock_threshold });
+    renderApp();
+  } catch (e) { document.getElementById('nmMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`; }
 };
-actions.adjustStock = async (type, id, name) => {
-  const change = Number(prompt(`Stock adjustment for ${name} (use negative to reduce):`) || 0);
-  if (!change) return;
-  const reason = prompt('Reason (e.g. damaged, recount):') || 'adjustment';
-  await API.post(`/inventory/${type === 'product' ? 'products' : 'materials'}/${id}/adjust`, { change_qty: change, reason });
-  renderApp();
+actions.editMaterial = async (id) => {
+  const m = (await API.get('/inventory/materials')).find(x => x.id === id);
+  if (!m) return;
+  document.getElementById('matEditBox').innerHTML = `<div class="card">
+    <h3>Edit ${esc(m.name)}</h3>
+    <label>Name</label><input id="em_name" value="${esc(m.name)}">
+    <label>Unit</label><input id="em_unit" value="${esc(m.unit)}">
+    <label>How much is in stock right now</label><input id="em_stock" type="number" step="0.01" value="${m.stock_qty}">
+    <label>Cost, per unit</label><input id="em_cost" type="number" step="0.01" value="${m.avg_cost}">
+    <label>Warn when stock falls below</label><input id="em_low" type="number" step="0.01" value="${m.low_stock_threshold}">
+    <div id="emMsg"></div>
+    <div class="grid cols-2" style="margin-top:8px">
+      <button class="btn" onclick="actions.saveMaterial(${id})">Save</button>
+      <button class="btn secondary" onclick="document.getElementById('matEditBox').innerHTML=''">Cancel</button>
+    </div>
+  </div>`;
+};
+actions.saveMaterial = async (id) => {
+  const body = {
+    name: document.getElementById('em_name').value,
+    unit: document.getElementById('em_unit').value,
+    stock_qty: Number(document.getElementById('em_stock').value),
+    avg_cost: Number(document.getElementById('em_cost').value),
+    low_stock_threshold: Number(document.getElementById('em_low').value),
+  };
+  try {
+    await API.put('/inventory/materials/' + id, body);
+    renderApp();
+  } catch (e) { document.getElementById('emMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`; }
 };
 actions.loadBom = async () => {
   const productId = document.getElementById('bom_product').value;
@@ -641,10 +892,14 @@ actions.deleteBom = async (id) => { await API.del('/inventory/bom/' + id); actio
 
 // ---------------- Manufacturing ----------------
 async function pageManufacturing() {
+  if (API.user.role !== 'admin') return withShiftGate(pageManufacturingInner);
+  return pageManufacturingInner();
+}
+async function pageManufacturingInner() {
   const [products, batches] = await Promise.all([API.get('/inventory/products'), API.get('/production')]);
   return `
   <div class="card">
-    <h2>Cutting: log bags produced from rolls</h2>
+    <h2>Packaging: log bags produced from rolls</h2>
     <label>Product / bag size</label>
     <select id="prod_product">${products.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.size)})</option>`).join('')}</select>
     <label>Quantity produced (packets)</label>
@@ -684,37 +939,58 @@ actions.logProduction = async () => {
   }
 };
 
-// ---------------- Input stage: beads in, rolls out ----------------
+// ---------------- Plant Operator: beads in, rolls out ----------------
 async function pageStageInput() {
-  const [materials, conversions] = await Promise.all([API.get('/inventory/materials'), API.get('/stages/input')]);
+  if (API.user.role !== 'admin') return withShiftGate(pageStageInputInner);
+  return pageStageInputInner();
+}
+async function pageStageInputInner() {
+  const [materials, conversions, machines, elecLogs] = await Promise.all([
+    API.get('/inventory/materials'), API.get('/stages/input'), API.get('/machines'), API.get('/stages/electricity'),
+  ]);
   return `
   <div class="card">
-    <h2>Log what came in and what came out</h2>
-    <label>Material used (e.g. Plastic Beads)</label>
-    <select id="in_material">${materials.map(m => `<option value="${m.id}">${esc(m.name)} (${esc(m.unit)}) - stock ${m.stock_qty}</option>`).join('')}</select>
-    <label>Quantity used</label>
+    <h2>What did you feed the machine, and what came out?</h2>
+    <label>Which machine</label>
+    <select id="in_machine">${machines.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select>
+    <label>What you put in (e.g. Plastic Beads)</label>
+    <select id="in_material">${materials.map(m => `<option value="${m.id}">${esc(m.name)} (${esc(m.unit)}) - ${m.stock_qty} left</option>`).join('')}</select>
+    <label>How much you put in</label>
     <input id="in_qty" type="number" step="0.01">
-    <label>Material produced (e.g. Plastic Roll)</label>
+    <label>What came out (e.g. Plastic Roll)</label>
     <select id="in_out_material">${materials.map(m => `<option value="${m.id}">${esc(m.name)} (${esc(m.unit)})</option>`).join('')}</select>
-    <label>Quantity produced</label>
+    <label>How much came out</label>
     <input id="in_out_qty" type="number" step="0.01">
-    <label>Source company (who supplied the beads, optional)</label>
+    <label>Where the material came from (optional)</label>
     <input id="in_source" placeholder="e.g. ABC Polymers">
     <label>Notes</label>
     <input id="in_notes" placeholder="optional">
-    <label>Photo (of the beads used / rolls produced)</label>
+    <label>Take a photo</label>
     <input id="in_photo" type="file" accept="image/*" capture="environment">
     <div id="inMsg"></div>
     <button class="btn block" style="margin-top:10px" onclick="actions.logInput()">Save</button>
   </div>
+
   <div class="card">
-    <h2>Recent entries</h2>
+    <h2>Today's electricity</h2>
+    <p style="color:var(--muted);font-size:13px">Read the meter and type the number here, once a day.</p>
+    <label>Units used (kWh)</label>
+    <input id="elec_kwh" type="number" step="0.01">
+    <div id="elecMsg"></div>
+    <button class="btn secondary block" style="margin-top:10px" onclick="actions.logElectricity()">Save electricity reading</button>
+    <div class="table-wrap" style="margin-top:12px"><table><tr><th>Date</th><th>kWh</th><th>Cost</th></tr>
+      ${elecLogs.slice(0, 7).map(e => `<tr><td>${esc(e.log_date)}</td><td>${e.kwh}</td><td>${money(e.cost)}</td></tr>`).join('')}
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h2>What you have logged</h2>
     <div class="table-wrap"><table>
-      <tr><th>Date</th><th>Used</th><th>Produced</th><th>Source</th><th>Operator</th><th>Photo</th></tr>
-      ${conversions.map(c => `<tr><td>${dt(c.created_at)}</td>
+      <tr><th>Date</th><th>Machine</th><th>Put in</th><th>Came out</th><th>From</th><th>Photo</th></tr>
+      ${conversions.map(c => `<tr><td>${dt(c.created_at)}</td><td>${esc(c.machine_name || '')}</td>
         <td>${c.input_qty}${esc(c.input_unit)} ${esc(c.input_material_name)}</td>
         <td>${c.output_qty}${esc(c.output_unit)} ${esc(c.output_material_name)}</td>
-        <td>${esc(c.source_company || '')}</td><td>${esc(c.operator_name || '')}</td>
+        <td>${esc(c.source_company || '')}</td>
         <td>${c.photo_path ? `<a href="/uploads/${esc(c.photo_path)}" target="_blank">view</a>` : ''}</td></tr>`).join('')}
     </table></div>
   </div>`;
@@ -723,10 +999,11 @@ actions.logInput = async () => {
   const inputMat = document.getElementById('in_material').value;
   const outputMat = document.getElementById('in_out_material').value;
   if (inputMat === outputMat) {
-    document.getElementById('inMsg').innerHTML = `<div class="msg error">Material used and material produced must be different.</div>`;
+    document.getElementById('inMsg').innerHTML = `<div class="msg error">"What you put in" and "what came out" must be different.</div>`;
     return;
   }
   const form = new FormData();
+  form.append('machine_id', document.getElementById('in_machine').value);
   form.append('input_material_id', inputMat);
   form.append('input_qty', document.getElementById('in_qty').value);
   form.append('output_material_id', outputMat);
@@ -742,37 +1019,64 @@ actions.logInput = async () => {
     document.getElementById('inMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`;
   }
 };
+actions.logElectricity = async () => {
+  const kwh = Number(document.getElementById('elec_kwh').value);
+  if (!kwh) { document.getElementById('elecMsg').innerHTML = `<div class="msg error">Type how many units were used.</div>`; return; }
+  try {
+    await API.post('/stages/electricity', { kwh });
+    renderApp();
+  } catch (e) {
+    document.getElementById('elecMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`;
+  }
+};
 
 // ---------------- Distribution stage: packets out to a person/place ----------------
 async function pageDispatch() {
-  const [products, dispatches] = await Promise.all([API.get('/inventory/products'), API.get('/stages/dispatch')]);
+  if (API.user.role !== 'admin') return withShiftGate(pageDispatchInner);
+  return pageDispatchInner();
+}
+async function pageDispatchInner() {
+  const [products, dispatches, pendingOrders] = await Promise.all([
+    API.get('/inventory/products'), API.get('/stages/dispatch'), API.get('/orders?status=pending'),
+  ]);
   return `
+  ${pendingOrders.length ? `
   <div class="card">
-    <h2>Log bags taken out for distribution</h2>
+    <h2>Customers waiting for delivery</h2>
+    ${pendingOrders.map(o => `<div class="tip ${o.qty > o.product_stock ? 'warning' : ''}">
+      <b>${esc(o.customer_name)}</b> wants ${o.qty} x ${esc(o.product_name)} (${esc(o.size)})
+      ${o.qty > o.product_stock ? ` - only ${o.product_stock} ready, wait for more to be made` : ' - ready now'}
+      <div style="margin-top:6px"><button class="btn secondary" onclick="actions.fillOrderIntoDispatch(${o.id},${o.product_id},${o.qty},'${esc(o.customer_name)}')" ${o.qty > o.product_stock ? 'disabled' : ''}>Fill in delivery form</button></div>
+    </div>`).join('')}
+  </div>` : ''}
+
+  <div class="card">
+    <h2>Log bags you are taking out for delivery</h2>
+    <input type="hidden" id="di_order_id" value="">
     <label>Product / bag size</label>
-    <select id="di_product">${products.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.size)}) - stock ${p.stock_qty}</option>`).join('')}</select>
-    <label>Quantity (packets)</label>
+    <select id="di_product">${products.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.size)}) - ${p.stock_qty} ready</option>`).join('')}</select>
+    <label>How many packets</label>
     <input id="di_qty" type="number" step="1">
-    <label>Taken to (person)</label>
+    <label>Who is getting it</label>
     <input id="di_person" placeholder="e.g. John Kamau">
     <label>Place</label>
     <input id="di_place" placeholder="e.g. Kawangware market">
     <label>Vehicle</label>
     <input id="di_vehicle" placeholder="e.g. KDA 123X Probox">
-    <label>Amount collected now (leave 0 if on credit / paying later)</label>
+    <label>Money collected now (leave 0 if they pay later)</label>
     <input id="di_amount" type="number" step="0.01" value="0">
-    <label>Payment method</label>
+    <label>How they paid</label>
     <select id="di_method"><option value="cash">Cash</option><option value="mpesa">M-Pesa</option><option value="bank">Bank / Equity</option></select>
-    <label><input type="checkbox" id="di_paid" style="width:auto;display:inline-block;vertical-align:middle"> Fully settled</label>
+    <label><input type="checkbox" id="di_paid" style="width:auto;display:inline-block;vertical-align:middle"> Paid in full</label>
     <label>Notes</label>
     <input id="di_notes" placeholder="optional">
-    <label>Photo (optional)</label>
+    <label>Take a photo</label>
     <input id="di_photo" type="file" accept="image/*" capture="environment">
     <div id="diMsg"></div>
     <button class="btn block" style="margin-top:10px" onclick="actions.logDispatch()">Save</button>
   </div>
   <div class="card">
-    <h2>Recent dispatches</h2>
+    <h2>What you have delivered</h2>
     <div class="table-wrap"><table>
       <tr><th>Date</th><th>Product</th><th>Qty</th><th>To</th><th>Place</th><th>Vehicle</th><th>Collected</th><th>Status</th><th>Photo</th><th></th></tr>
       ${dispatches.map(d => `<tr><td>${dt(d.dispatched_at)}</td><td>${esc(d.product_name)} (${esc(d.size)})</td>
@@ -785,6 +1089,13 @@ async function pageDispatch() {
     </table></div>
   </div>`;
 }
+actions.fillOrderIntoDispatch = (orderId, productId, qty, customerName) => {
+  document.getElementById('di_order_id').value = orderId;
+  document.getElementById('di_product').value = productId;
+  document.getElementById('di_qty').value = qty;
+  document.getElementById('di_person').value = customerName;
+  document.getElementById('di_qty').scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
 actions.logDispatch = async () => {
   const form = new FormData();
   form.append('product_id', document.getElementById('di_product').value);
@@ -796,11 +1107,13 @@ actions.logDispatch = async () => {
   form.append('payment_method', document.getElementById('di_method').value);
   form.append('paid', document.getElementById('di_paid').checked ? 'true' : '');
   form.append('notes', document.getElementById('di_notes').value);
+  const orderId = document.getElementById('di_order_id').value;
+  if (orderId) form.append('order_id', orderId);
   const photoInput = document.getElementById('di_photo');
   if (photoInput.files[0]) form.append('photo', photoInput.files[0]);
   try {
-    await API.postForm('/stages/dispatch', form);
-    renderApp();
+    const result = await API.postForm('/stages/dispatch', form);
+    navigate('#/delivery-receipt/' + result.id);
   } catch (e) {
     document.getElementById('diMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`;
   }
@@ -872,23 +1185,64 @@ actions.logPurchase = async () => {
 
 // ---------------- Customers ----------------
 async function pageCustomers() {
-  const customers = await API.get('/customers');
+  const [customers, products, orders] = await Promise.all([
+    API.get('/customers'), API.get('/inventory/products'), API.get('/orders'),
+  ]);
   return `
   <div class="card">
     <h2>Customers</h2>
-    <button class="btn secondary" onclick="actions.newCustomer()">Add customer</button>
+    <button class="btn secondary" onclick="actions.newCustomer()">Add a customer</button>
     <div class="table-wrap" style="margin-top:10px"><table>
       <tr><th>Name</th><th>Phone</th><th>Owes</th><th></th></tr>
       ${customers.map(c => `<tr><td>${esc(c.name)}</td><td>${esc(c.phone || '')}</td>
         <td>${c.balance > 0 ? `<span class="pill warn">${money(c.balance)}</span>` : money(c.balance)}</td>
         <td>${c.balance > 0 ? `<button class="btn secondary" onclick="actions.payCustomer(${c.id},'${esc(c.name)}')">Record payment</button>` : ''}</td></tr>`).join('')}
     </table></div>
+  </div>
+
+  <div class="card">
+    <h2>Take an order</h2>
+    <p style="color:var(--muted);font-size:13px">A customer wants bags now but you will deliver later. This tells Picking what to bring, and tells Packaging if there is not enough made yet.</p>
+    <label>Customer</label>
+    <select id="or_customer">${customers.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+    <label>Bag size</label>
+    <select id="or_product">${products.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.size)}) - ${p.stock_qty} ready now</option>`).join('')}</select>
+    <label>How many</label>
+    <input id="or_qty" type="number" step="1">
+    <div id="orMsg"></div>
+    <button class="btn secondary block" style="margin-top:10px" onclick="actions.newOrder()">Take this order</button>
+  </div>
+
+  <div class="card">
+    <h2>Orders</h2>
+    <div class="table-wrap"><table><tr><th>Date</th><th>Customer</th><th>Wants</th><th>Status</th><th></th></tr>
+      ${orders.map(o => `<tr><td>${dt(o.created_at)}</td><td>${esc(o.customer_name)}</td><td>${o.qty} x ${esc(o.product_name)} (${esc(o.size)})</td>
+        <td>${o.status === 'pending' ? '<span class="pill warn">Waiting</span>' : o.status === 'fulfilled' ? '<span class="pill ok">Delivered</span>' : '<span class="pill">Cancelled</span>'}</td>
+        <td>${o.status === 'pending' ? `<button class="btn secondary" onclick="actions.cancelOrder(${o.id})">Cancel</button>` : ''}</td></tr>`).join('')}
+    </table></div>
   </div>`;
 }
 actions.newCustomer = async () => {
   const name = prompt('Customer name:'); if (!name) return;
-  const phone = prompt('Phone (optional):') || '';
+  const phone = prompt('Phone number (optional):') || '';
   await API.post('/customers', { name, phone });
+  renderApp();
+};
+actions.newOrder = async () => {
+  const customer_id = document.getElementById('or_customer').value;
+  const product_id = document.getElementById('or_product').value;
+  const qty = Number(document.getElementById('or_qty').value);
+  if (!qty) { document.getElementById('orMsg').innerHTML = `<div class="msg error">Type how many bags.</div>`; return; }
+  try {
+    await API.post('/orders', { customer_id, product_id, qty });
+    renderApp();
+  } catch (e) {
+    document.getElementById('orMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`;
+  }
+};
+actions.cancelOrder = async (id) => {
+  if (!confirm('Cancel this order?')) return;
+  await API.put(`/orders/${id}/cancel`, {});
   renderApp();
 };
 actions.payCustomer = async (id, name) => {
@@ -978,59 +1332,73 @@ async function pageReports() {
 }
 
 // ---------------- Settings ----------------
-const ROLE_LABELS = { admin: 'Admin', cashier: 'Cashier / POS', input: 'Input (beads -> rolls)', cutting: 'Cutting (rolls -> bags)', distribution: 'Distribution' };
+const ROLE_LABELS = { admin: 'Admin', cashier: 'Cashier / POS', input: 'Plant Operator', cutting: 'Packaging', distribution: 'Picking' };
 
 async function pageSettings() {
-  const [users, lock, sessionsList] = await Promise.all([
-    API.get('/auth/users/detailed'), API.get('/auth/lock'), API.get('/auth/sessions'),
+  const [users, lock, sessionsList, machines] = await Promise.all([
+    API.get('/auth/users/detailed'), API.get('/auth/lock'), API.get('/auth/sessions'), API.get('/machines'),
   ]);
   const s = state.settings;
   return `
   <div class="card">
-    <h2>Business profile</h2>
+    <h2>Business details</h2>
+    <p style="color:var(--muted);font-size:13px">This shows on receipts and at the top of the app.</p>
     <label>Business name</label><input id="set_name" value="${esc(s.business_name)}">
-    <label>Industry</label><input id="set_industry" value="${esc(s.industry)}">
+    <label>What kind of business</label><input id="set_industry" value="${esc(s.industry)}">
     <label>Address</label><input id="set_address" value="${esc(s.address)}">
     <label>Phone</label><input id="set_phone" value="${esc(s.phone)}">
-    <label>Currency</label><input id="set_currency" value="${esc(s.currency)}">
+    <label>Money (currency code)</label><input id="set_currency" value="${esc(s.currency)}">
+    <label>Cost of electricity, per kWh (used to work out running costs)</label>
+    <input id="set_elec_rate" type="number" step="0.01" value="${esc(s.electricity_rate_per_kwh || '0')}">
+    <label>Welcome message shown after login</label>
+    <input id="set_tagline" value="${esc(s.welcome_tagline || '')}">
     <div id="setMsg"></div>
     <button class="btn block" style="margin-top:10px" onclick="actions.saveSettings()">Save</button>
   </div>
 
   <div class="card">
-    <h2>System access</h2>
-    <p style="color:var(--muted);font-size:13px">Instantly block everyone except you from using the app - for end of day, or if something looks wrong. This doesn't touch the router or WiFi, it only affects this app.</p>
-    <button class="btn ${lock.locked ? 'danger' : ''} block" onclick="actions.toggleLock(${!lock.locked})">${lock.locked ? 'Unlock system' : 'Lock system (except admin)'}</button>
-    <h3 style="margin-top:16px">Who's logged in right now</h3>
-    <div class="table-wrap"><table><tr><th>Name</th><th>Role</th><th>Since</th><th></th></tr>
+    <h2>Lock the app / see who is on it</h2>
+    <p style="color:var(--muted);font-size:13px">Lock stops everyone except you from using the app right now - for end of day, or if something looks wrong. It does not touch the WiFi router.</p>
+    <button class="btn ${lock.locked ? 'danger' : ''} block" onclick="actions.toggleLock(${!lock.locked})">${lock.locked ? 'Unlock the app' : 'Lock the app (only you can use it)'}</button>
+    <h3 style="margin-top:16px">People logged in right now</h3>
+    <div class="table-wrap"><table><tr><th>Name</th><th>Section</th><th>Since</th><th></th></tr>
       ${sessionsList.map(sn => `<tr><td>${esc(sn.name)}</td><td>${esc(ROLE_LABELS[sn.role] || sn.role)}</td><td>${dt(sn.loginAt)}</td>
-        <td><button class="btn secondary" onclick="actions.kickSession('${sn.tokenFull}')">Log out</button></td></tr>`).join('')}
+        <td><button class="btn secondary" onclick="actions.kickSession('${sn.tokenFull}')">Log them out</button></td></tr>`).join('')}
     </table></div>
   </div>
 
   <div class="card">
-    <h2>Add staff</h2>
-    <p style="color:var(--muted);font-size:13px">Each person gets their own login and only sees their own section. Set a per-unit pay rate if they're paid by output (0 = salaried / not piece-rated).</p>
-    <label>Name</label><input id="nu_name">
-    <label>Role</label>
-    <select id="nu_role">
-      <option value="cashier">Cashier / POS</option>
-      <option value="input">Input (beads -> rolls)</option>
-      <option value="cutting">Cutting (rolls -> bags)</option>
-      <option value="distribution">Distribution</option>
-      <option value="admin">Admin</option>
-    </select>
-    <label>4-digit PIN</label><input id="nu_pin" type="password" inputmode="numeric" maxlength="6">
-    <label>Pay rate per unit produced (0 if salaried)</label><input id="nu_rate" type="number" step="0.01" value="0">
-    <label>Shift start (optional, for the on-WiFi alarm)</label><input id="nu_shift_start" type="time">
-    <label>Shift end (optional)</label><input id="nu_shift_end" type="time">
-    <div id="nuMsg"></div>
-    <button class="btn secondary block" style="margin-top:10px" onclick="actions.newUser()">Add staff</button>
+    <h2>Machines</h2>
+    <p style="color:var(--muted);font-size:13px">The Plant Operator picks one of these when they log work. Add every machine you have.</p>
+    <div class="table-wrap"><table><tr><th>Machine name</th><th></th></tr>
+      ${machines.map(m => `<tr><td>${esc(m.name)}</td><td><button class="btn secondary" onclick="actions.removeMachine(${m.id})">Remove</button></td></tr>`).join('')}
+    </table></div>
+    <button class="btn secondary block" style="margin-top:10px" onclick="actions.newMachine()">Add a machine</button>
   </div>
 
   <div class="card">
-    <h2>Staff accounts</h2>
-    <div class="table-wrap"><table><tr><th>Name</th><th>Role</th><th>Rate</th><th>Shift</th><th></th></tr>
+    <h2>Add a person</h2>
+    <p style="color:var(--muted);font-size:13px">Each person gets their own login and only sees their own work. Leave PIN blank and one will be made up for you to share with them. Set a pay rate only if they are paid per bag/roll/packet made (leave 0 if they get a fixed wage).</p>
+    <label>Name</label><input id="nu_name">
+    <label>What they do</label>
+    <select id="nu_role">
+      <option value="cashier">Cashier (sells at the shop)</option>
+      <option value="input">Plant Operator (runs the machine)</option>
+      <option value="cutting">Packaging (cuts and packs bags)</option>
+      <option value="distribution">Picking (delivers bags)</option>
+      <option value="admin">Admin (sees everything)</option>
+    </select>
+    <label>PIN (leave blank to make one automatically)</label><input id="nu_pin" type="password" inputmode="numeric" maxlength="6">
+    <label>Pay per unit made (0 if fixed wage)</label><input id="nu_rate" type="number" step="0.01" value="0">
+    <label>Shift starts at (optional)</label><input id="nu_shift_start" type="time">
+    <label>Shift ends at (optional)</label><input id="nu_shift_end" type="time">
+    <div id="nuMsg"></div>
+    <button class="btn secondary block" style="margin-top:10px" onclick="actions.newUser()">Add this person</button>
+  </div>
+
+  <div class="card">
+    <h2>Everyone with a login</h2>
+    <div class="table-wrap"><table><tr><th>Name</th><th>Does</th><th>Pay rate</th><th>Shift</th><th></th></tr>
       ${users.map(u => `<tr><td>${esc(u.name)}</td><td>${esc(ROLE_LABELS[u.role] || u.role)}</td><td>${u.piece_rate != null ? money(u.piece_rate) : '-'}</td>
         <td>${u.shift_start || u.shift_end ? `${esc(u.shift_start || '?')}-${esc(u.shift_end || '?')}` : '-'}</td>
         <td>${u.id !== API.user.id ? `<button class="btn secondary" onclick="actions.editUser(${u.id},'${esc(u.name)}')">Edit</button>
@@ -1039,9 +1407,9 @@ async function pageSettings() {
   </div>
 
   <div class="card">
-    <h2>Backup</h2>
-    <p style="color:var(--muted);font-size:13px">Download a full backup of the database. Keep copies on a USB drive off the machine.</p>
-    <a class="btn block" href="/api/backup/download" target="_blank">Download backup (.db)</a>
+    <h2>Save a copy of all the data</h2>
+    <p style="color:var(--muted);font-size:13px">Downloads everything in the app to one file. Keep copies on a USB drive, away from this computer.</p>
+    <a class="btn block" href="/api/backup/download" target="_blank">Download a copy now</a>
   </div>`;
 }
 actions.saveSettings = async () => {
@@ -1051,6 +1419,8 @@ actions.saveSettings = async () => {
     address: document.getElementById('set_address').value,
     phone: document.getElementById('set_phone').value,
     currency: document.getElementById('set_currency').value,
+    electricity_rate_per_kwh: document.getElementById('set_elec_rate').value,
+    welcome_tagline: document.getElementById('set_tagline').value,
   };
   try {
     await API.put('/auth/settings', body);
@@ -1068,6 +1438,16 @@ actions.kickSession = async (token) => {
   await API.del('/auth/sessions/' + token);
   renderApp();
 };
+actions.newMachine = async () => {
+  const name = prompt('Machine name (e.g. "Machine A - new"):'); if (!name) return;
+  await API.post('/machines', { name });
+  renderApp();
+};
+actions.removeMachine = async (id) => {
+  if (!confirm('Remove this machine from the list?')) return;
+  await API.del('/machines/' + id);
+  renderApp();
+};
 actions.newUser = async () => {
   const name = document.getElementById('nu_name').value.trim();
   const role = document.getElementById('nu_role').value;
@@ -1075,14 +1455,35 @@ actions.newUser = async () => {
   const piece_rate = Number(document.getElementById('nu_rate').value) || 0;
   const shift_start = document.getElementById('nu_shift_start').value || null;
   const shift_end = document.getElementById('nu_shift_end').value || null;
-  if (!name || !pin) { document.getElementById('nuMsg').innerHTML = `<div class="msg error">Name and PIN are required.</div>`; return; }
+  if (!name) { document.getElementById('nuMsg').innerHTML = `<div class="msg error">Type their name first.</div>`; return; }
   try {
-    const created = await API.post('/auth/users', { name, role, pin, piece_rate });
+    const created = await API.post('/auth/users', { name, role, pin: pin || undefined, piece_rate });
     if (shift_start || shift_end) await API.put(`/auth/users/${created.id}`, { shift_start, shift_end });
-    renderApp();
+    document.getElementById('nuMsg').innerHTML = newStaffPinCard(created);
+    document.getElementById('nu_name').value = '';
+    document.getElementById('nu_pin').value = '';
   } catch (e) {
     document.getElementById('nuMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`;
   }
+};
+function newStaffPinCard(u) {
+  window.__lastNewStaffShareText = `${esc(state.settings.business_name || '')}\nYour PlastPOS login\nName: ${u.name}\nPIN: ${u.pin}\nAsk the admin how to reach the app on the WiFi.`;
+  return `<div class="msg ok">
+    <b>${esc(u.name)}</b> was added. Their PIN is <b style="font-size:16px">${esc(u.pin || '(kept the one you typed)')}</b>.
+    ${u.pin ? `
+    <div style="display:flex;gap:8px;margin-top:8px">
+      <button class="btn secondary" style="flex:1" onclick="actions.shareNewStaffPin()">Share (WhatsApp/SMS)</button>
+      <button class="btn" style="flex:1" onclick="renderApp()">Done</button>
+    </div>` : `<div style="margin-top:8px"><button class="btn" onclick="renderApp()">Done</button></div>`}
+  </div>`;
+}
+actions.shareNewStaffPin = async () => {
+  const text = window.__lastNewStaffShareText || '';
+  if (navigator.share) {
+    try { await navigator.share({ title: 'PlastPOS login', text }); return; } catch (e) { return; }
+  }
+  try { await navigator.clipboard.writeText(text); alert('Copied. Paste it into WhatsApp.'); }
+  catch (e) { alert(text); }
 };
 actions.removeUser = async (id) => {
   if (!confirm('Remove this staff account?')) return;

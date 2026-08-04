@@ -31,13 +31,23 @@ router.post('/clock-out', requireAuth(...WORKER_ROLES), (req, res) => {
   res.json(db.prepare('SELECT * FROM shift_logs WHERE id = ?').get(open.id));
 });
 
-// GET /api/shifts/today - admin oversight: who's clocked in right now, and today's log
+function workLoggedToday(userId, role, today) {
+  if (role === 'input') return db.prepare(`SELECT COUNT(*) as n FROM material_conversions WHERE operator_id = ? AND date(created_at) = ?`).get(userId, today).n > 0;
+  if (role === 'cutting') return db.prepare(`SELECT COUNT(*) as n FROM production_batches WHERE operator_id = ? AND date(produced_at) = ?`).get(userId, today).n > 0;
+  if (role === 'distribution') return db.prepare(`SELECT COUNT(*) as n FROM dispatches WHERE operator_id = ? AND date(dispatched_at) = ?`).get(userId, today).n > 0;
+  if (role === 'cashier') return db.prepare(`SELECT COUNT(*) as n FROM sales WHERE cashier_id = ? AND date(sold_at) = ?`).get(userId, today).n > 0;
+  return true;
+}
+
+// GET /api/shifts/today - admin oversight: who's clocked in right now, and
+// today's log - flags anyone who clocked in but hasn't actually logged any
+// work yet, so attendance and output can be checked against each other.
 router.get('/today', requireAuth('admin'), (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const rows = db.prepare(`SELECT shift_logs.*, users.name, users.role
     FROM shift_logs JOIN users ON users.id = shift_logs.user_id
     WHERE date(shift_logs.clock_in) = ? ORDER BY shift_logs.clock_in DESC`).all(today);
-  res.json(rows);
+  res.json(rows.map(r => ({ ...r, worked: workLoggedToday(r.user_id, r.role, today) })));
 });
 
 module.exports = router;

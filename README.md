@@ -6,30 +6,37 @@ Built for a manufacturer producing paper/plastic bags in 0.5kg, 1kg and 2kg size
 
 ## The production chain
 
-Each physical stage of making a bag is its own login role, so everyone only sees their own section and the admin sees the whole chain:
+Each physical stage of making a bag is its own login role, so everyone only sees their own section and admin sees the whole chain. A worker must press **Start my shift** before any of this is available to them, and **End my shift** closes it again - admin sees exactly when each person started and stopped, and whether they actually logged any work while on shift.
 
-1. **Input** — feeds raw material (e.g. plastic beads) in, logs rolls produced out, with a photo and the supplying company
-2. **Cutting** — cuts rolls into bag packets by size; a Bill of Materials auto-deducts roll stock and prices the batch, with an optional photo
-3. **Distribution** — takes finished packets out by vehicle to a person/place, optionally collecting payment (cash/M-Pesa/bank) on the spot or later
-4. **Cashier / POS** — walk-in sales at the shop
+1. **Plant Operator** — picks which machine, feeds raw material in (e.g. plastic beads), logs rolls produced out, with a photo and the supplying company. Also logs one electricity meter reading per day.
+2. **Packaging** — cuts rolls into bag packets by size; a Bill of Materials auto-deducts roll stock and prices the batch, with an optional photo.
+3. **Picking** — sees the queue of customer orders waiting for delivery, takes finished packets out by vehicle to a person/place, optionally collecting payment (cash/M-Pesa/bank) on the spot or later, and gets a printable/shareable delivery slip.
+4. **Cashier** — walk-in sales at the shop (POS), same receipt/print/share flow.
 
-Every worker gets their own dashboard: today's/this week's output, a 7-day trend chart, and their pay status. Admin's dashboard shows a full activity feed across every section, who's clocked in, 14-day production and profit/loss charts, and flags any section that logged nothing the previous day.
+Every worker gets their own dashboard: today's/this week's output, a 7-day trend chart, and their pay status. Admin's dashboard shows a full activity feed across every section, who's clocked in (and whether they've actually logged work), daily/weekly/monthly production and profit/loss charts, what it cost to run the plant today (materials + wages + electricity + other spending), and flags any section that logged nothing the previous day.
 
 ## Modules
 
 - **POS System** — tap-to-sell screen, cart, receipts, cash/mobile-money/credit payment
-- **Inventory Management** — finished goods + raw materials, stock ledger, low-stock alerts
-- **Manufacturing (multi-stage)** — Input → Cutting → Distribution, each with its own login, photo proof, and stock/cash effects (see above)
+- **Inventory Management** — finished goods + raw materials, stock ledger, low-stock alerts, on-page edit forms for stock/cost (no popups)
+- **Manufacturing (multi-stage)** — Plant Operator → Packaging → Picking, each with its own login, shift gate, photo proof, and stock/cash effects (see above)
+- **Machines** — admin maintains the list of machines; the Plant Operator picks one every time they log work, so output is traceable per machine
+- **Customer Orders** — a customer can order ahead of stock being ready; Picking sees a fulfilment queue, and Packaging/Plant Operator get an actionable tip if there isn't enough made yet
 - **Cash Book & Expense Tracking** — running cash-in-hand, manual expense/income entries, auto-posted sale/purchase/dispatch-payment/wage entries
-- **Purchases & Suppliers** — raw material intake (admin or the Input worker), supplier records, running average material cost
+- **Purchases & Suppliers** — raw material intake, admin-only (the financial/accountability side is kept separate from the Plant Operator's machine-work logging)
 - **Customer Management** — customer records, credit sales, balance tracking, payment recording
 - **Payroll** — piece-rate pay per worker based on logged output; admin marks payments (with optional proof photo); workers can flag "I wasn't paid this" for admin to follow up on
-- **Shifts** — clock in/out per worker, optional schedule, and a same-WiFi alarm that rings while the app is open on that phone
-- **Reporting & Analytics** — sales, production, stock, cash flow, top customers, outstanding credit, 14-day production/profit charts
-- **System access control** — admin can instantly lock the app to everyone but themselves, and see/kick any active login session
+- **Shifts** — clock in/out gates each worker's page, optional schedule, and a same-WiFi alarm that rings while the app is open on that phone
+- **Running costs** — materials used + wages paid + electricity + other spending, totalled per day, admin-only
+- **Reporting & Analytics** — sales, production, stock, cash flow, top customers, outstanding credit, daily/weekly/monthly charts
+- **System access control** — admin can instantly lock the app to everyone but themselves, see/kick any active login session, and reset anyone's PIN if they get locked out
 - **Backup & Offline Functionality** — everything runs on a local SQLite file; one-click backup download + a scheduled backup script
-- **Receipt Printing & Hardware Integration** — browser print (works with thermal receipt printers) and native phone share sheet (WhatsApp, SMS, etc.)
-- **Offline AI Tips** — a fully local, rule-based insight engine (low stock, sales trend swings, credit follow-ups, cash sanity checks, "section X logged nothing yesterday") — no internet, no API cost
+- **Receipt Printing & Hardware Integration** — browser print (works with thermal receipt printers) and native phone share sheet (WhatsApp, SMS, etc.), for both shop sales and deliveries
+- **Offline AI Tips** — a fully local, rule-based insight engine (low stock, sales trend swings, credit follow-ups, cash sanity checks, understocked orders, "section X logged nothing yesterday") — no internet, no API cost
+
+## Staff accounts
+
+Admin adds each person from Settings, picks their role, and can leave the PIN blank to have a simple one made up automatically (shown once, with a Share button to send it over WhatsApp/SMS). If someone forgets their PIN, they tap "I forgot my PIN" on the login screen, which pings admin's dashboard to reset it - no email/SMS server involved. Every login shows a short welcome message (customisable in Settings) and a time-of-day greeting.
 
 ## How it works
 

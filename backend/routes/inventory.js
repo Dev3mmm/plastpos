@@ -23,15 +23,21 @@ router.post('/products', requireAuth('admin'), (req, res) => {
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(info.lastInsertRowid));
 });
 
+// One simple form: change the price, the low-stock warning number, or the
+// stock count itself, all in one Save - no popup boxes.
 router.put('/products/:id', requireAuth('admin'), (req, res) => {
-  const { name, size, unit_price, unit_cost, low_stock_threshold, active } = req.body;
+  const { name, size, unit_price, unit_cost, low_stock_threshold, active, stock_qty } = req.body;
   const p = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Not found' });
-  db.prepare(`UPDATE products SET name=?, size=?, unit_price=?, unit_cost=?, low_stock_threshold=?, active=?
+  db.prepare(`UPDATE products SET name=?, size=?, unit_price=?, unit_cost=?, low_stock_threshold=?, active=?, stock_qty=?
     WHERE id=?`).run(
     name ?? p.name, size ?? p.size, unit_price ?? p.unit_price, unit_cost ?? p.unit_cost,
-    low_stock_threshold ?? p.low_stock_threshold, active ?? p.active, req.params.id
+    low_stock_threshold ?? p.low_stock_threshold, active ?? p.active,
+    stock_qty != null ? Number(stock_qty) : p.stock_qty, req.params.id
   );
+  if (stock_qty != null && Number(stock_qty) !== p.stock_qty) {
+    logMovement('product', req.params.id, Number(stock_qty) - p.stock_qty, 'manual correction');
+  }
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id));
 });
 
@@ -58,12 +64,20 @@ router.post('/materials', requireAuth('admin'), (req, res) => {
   res.json(db.prepare('SELECT * FROM raw_materials WHERE id = ?').get(info.lastInsertRowid));
 });
 
+// One simple form: type the amount in stock and what it costs per unit,
+// hit Save - this is how admin corrects/sets stock after buying something,
+// no popup boxes involved.
 router.put('/materials/:id', requireAuth('admin'), (req, res) => {
-  const { name, unit, low_stock_threshold } = req.body;
+  const { name, unit, low_stock_threshold, stock_qty, avg_cost } = req.body;
   const m = db.prepare('SELECT * FROM raw_materials WHERE id = ?').get(req.params.id);
   if (!m) return res.status(404).json({ error: 'Not found' });
-  db.prepare('UPDATE raw_materials SET name=?, unit=?, low_stock_threshold=? WHERE id=?')
-    .run(name ?? m.name, unit ?? m.unit, low_stock_threshold ?? m.low_stock_threshold, req.params.id);
+  db.prepare('UPDATE raw_materials SET name=?, unit=?, low_stock_threshold=?, stock_qty=?, avg_cost=? WHERE id=?')
+    .run(name ?? m.name, unit ?? m.unit, low_stock_threshold ?? m.low_stock_threshold,
+      stock_qty != null ? Number(stock_qty) : m.stock_qty,
+      avg_cost != null ? Number(avg_cost) : m.avg_cost, req.params.id);
+  if (stock_qty != null && Number(stock_qty) !== m.stock_qty) {
+    logMovement('material', req.params.id, Number(stock_qty) - m.stock_qty, 'manual correction');
+  }
   res.json(db.prepare('SELECT * FROM raw_materials WHERE id = ?').get(req.params.id));
 });
 

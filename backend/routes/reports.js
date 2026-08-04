@@ -105,4 +105,25 @@ router.get('/outstanding-credit', requireAuth('admin'), (req, res) => {
   res.json(db.prepare(`SELECT id, name, phone, balance FROM customers WHERE balance > 0 ORDER BY balance DESC`).all());
 });
 
+// What it costs to run the plant for one day: materials used to make bags,
+// wages paid, electricity, and other manual expenses. Admin-only - this is
+// money information, kept separate from what workers see.
+router.get('/running-costs', requireAuth('admin'), (req, res) => {
+  const date = req.query.date || new Date().toISOString().slice(0, 10);
+
+  const materials = db.prepare(`SELECT COALESCE(SUM(material_cost),0) as total
+    FROM production_batches WHERE date(produced_at) = ?`).get(date).total;
+  const wages = db.prepare(`SELECT COALESCE(SUM(amount),0) as total
+    FROM payroll_payments WHERE date(paid_at) = ?`).get(date).total;
+  const electricity = db.prepare(`SELECT COALESCE(SUM(cost),0) as total
+    FROM electricity_logs WHERE log_date = ?`).get(date).total;
+  const expenses = db.prepare(`SELECT COALESCE(SUM(amount),0) as total
+    FROM cash_transactions WHERE date(recorded_at) = ? AND type = 'out' AND category = 'expense'`).get(date).total;
+
+  res.json({
+    date, materials, wages, electricity, expenses,
+    total: materials + wages + electricity + expenses,
+  });
+});
+
 module.exports = router;

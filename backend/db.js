@@ -166,6 +166,54 @@ CREATE TABLE IF NOT EXISTS shift_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_shift_user ON shift_logs(user_id);
 
+-- Machines the Plant Operator can choose from when logging (admin-managed).
+CREATE TABLE IF NOT EXISTS machines (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+-- Daily electricity reading, logged by the Plant Operator, feeds into the
+-- admin's running-costs figure alongside materials and wages.
+CREATE TABLE IF NOT EXISTS electricity_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  log_date TEXT NOT NULL,
+  kwh REAL NOT NULL,
+  cost REAL NOT NULL DEFAULT 0,
+  operator_id INTEGER REFERENCES users(id),
+  notes TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_electricity_date ON electricity_logs(log_date);
+
+-- Customer orders (a request, not a sale/payment). Queued for Picking to
+-- fulfil; if stock's short, Packaging/Plant Operator see it as a tip until
+-- either stock catches up or it's marked fulfilled.
+CREATE TABLE IF NOT EXISTS orders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  customer_id INTEGER NOT NULL REFERENCES customers(id),
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  qty REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','fulfilled','cancelled')),
+  notes TEXT,
+  created_by INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now')),
+  fulfilled_by INTEGER REFERENCES users(id),
+  fulfilled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
+
+-- "I forgot my PIN / typed it wrong" - a public (pre-login) ping to admin
+-- asking for a reset, since there's no email/SMS to send one automatically.
+CREATE TABLE IF NOT EXISTS pin_reset_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  requested_at TEXT DEFAULT (datetime('now')),
+  resolved_at TEXT,
+  resolved_by INTEGER REFERENCES users(id)
+);
+
 -- Login sessions live in the DB, not just memory, specifically so a server
 -- restart/crash-recovery (systemd Restart=always, a nightly reboot, a power
 -- blip) doesn't silently log every staff member out mid-shift.
@@ -271,9 +319,12 @@ tryAddColumn('payroll_payments', 'resolved_at TEXT');
 tryAddColumn('payroll_payments', 'resolution_note TEXT');
 tryAddColumn('users', 'shift_start TEXT');
 tryAddColumn('users', 'shift_end TEXT');
+tryAddColumn('users', 'first_login_at TEXT');
 tryAddColumn('dispatches', 'vehicle TEXT');
 tryAddColumn('dispatches', 'amount_collected REAL NOT NULL DEFAULT 0');
 tryAddColumn('dispatches', 'payment_method TEXT');
 tryAddColumn('dispatches', 'paid INTEGER NOT NULL DEFAULT 0');
+tryAddColumn('material_conversions', 'machine_id INTEGER REFERENCES machines(id)');
+tryAddColumn('dispatches', 'order_id INTEGER REFERENCES orders(id)');
 
 module.exports = db;

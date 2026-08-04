@@ -6,15 +6,14 @@ const { logMovement } = require('./inventory');
 const router = express.Router();
 
 // ---- Suppliers ----
-// Both admin and the input-stage worker can see/add suppliers and log
-// intake - they're the ones physically receiving deliveries. The financial
-// side (cost, payment) stays visible to admin either way via reports.
+// Admin-only: buying stock and recording its cost is a financial action,
+// kept separate from the Input worker's job of logging machine usage.
 
-router.get('/suppliers', requireAuth('admin', 'input'), (req, res) => {
+router.get('/suppliers', requireAuth('admin'), (req, res) => {
   res.json(db.prepare('SELECT * FROM suppliers ORDER BY name').all());
 });
 
-router.post('/suppliers', requireAuth('admin', 'input'), (req, res) => {
+router.post('/suppliers', requireAuth('admin'), (req, res) => {
   const { name, phone, notes } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
   const info = db.prepare('INSERT INTO suppliers (name, phone, notes) VALUES (?, ?, ?)')
@@ -33,7 +32,7 @@ router.put('/suppliers/:id', requireAuth('admin'), (req, res) => {
 
 // ---- Purchases (raw material intake) ----
 
-router.get('/', requireAuth('admin', 'input'), (req, res) => {
+router.get('/', requireAuth('admin'), (req, res) => {
   const { from, to } = req.query;
   let sql = `SELECT purchases.*, suppliers.name as supplier_name, raw_materials.name as material_name,
     raw_materials.unit FROM purchases
@@ -49,10 +48,7 @@ router.get('/', requireAuth('admin', 'input'), (req, res) => {
 
 // Recording an intake bumps raw material stock and recalculates its
 // running average cost, so production batches price themselves correctly.
-// unit_cost is optional so the input worker can log "beads arrived" on the
-// spot without knowing the price - it defaults to 0 and admin can see/fix
-// it in Reports later.
-router.post('/', requireAuth('admin', 'input'), (req, res) => {
+router.post('/', requireAuth('admin'), (req, res) => {
   const { supplier_id, material_id, qty, paid_amount } = req.body;
   const unit_cost = req.body.unit_cost != null && req.body.unit_cost !== '' ? Number(req.body.unit_cost) : 0;
   if (!material_id || !qty || qty <= 0) {

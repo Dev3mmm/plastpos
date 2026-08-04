@@ -40,6 +40,8 @@ robocopy (Join-Path $root 'frontend') (Join-Path $appDir 'frontend') /E /NFL /ND
 Copy-Item (Join-Path $PSScriptRoot 'templates\Start-PlastPOS.bat') (Join-Path $outDir 'Start-PlastPOS.bat')
 Copy-Item (Join-Path $PSScriptRoot 'templates\Install-To-This-PC.bat') (Join-Path $outDir 'Install-To-This-PC.bat')
 Copy-Item (Join-Path $PSScriptRoot 'templates\Install.ps1') (Join-Path $outDir 'Install.ps1')
+Copy-Item (Join-Path $PSScriptRoot 'templates\Uninstall.bat') (Join-Path $outDir 'Uninstall.bat')
+Copy-Item (Join-Path $PSScriptRoot 'templates\Uninstall.ps1') (Join-Path $outDir 'Uninstall.ps1')
 Copy-Item (Join-Path $PSScriptRoot 'templates\README-INSTALL.txt') (Join-Path $outDir 'README-INSTALL.txt')
 
 $sizeMB = [math]::Round((Get-ChildItem $outDir -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 1)

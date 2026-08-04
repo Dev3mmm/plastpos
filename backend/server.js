@@ -17,6 +17,8 @@ const tipsRoutes = require('./routes/tips');
 const backupRoutes = require('./routes/backup');
 const payrollRoutes = require('./routes/payroll');
 const shiftsRoutes = require('./routes/shifts');
+const machinesRoutes = require('./routes/machines');
+const ordersRoutes = require('./routes/orders');
 
 // Seed the production chain on first run so the app isn't empty out of the
 // box: beads -> rolls (input stage) -> bag packets (cutting stage, via BOM).
@@ -61,6 +63,8 @@ app.use('/api/tips', tipsRoutes);
 app.use('/api/backup', backupRoutes);
 app.use('/api/payroll', payrollRoutes);
 app.use('/api/shifts', shiftsRoutes);
+app.use('/api/machines', machinesRoutes);
+app.use('/api/orders', ordersRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 

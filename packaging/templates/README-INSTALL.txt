@@ -37,6 +37,22 @@ flash drive, which is slower and risks corruption if the drive is
 removed while the app is running. Always use "Install-To-This-PC.bat"
 for actual day-to-day use in the plant.
 
+REMOVING PLASTPOS FROM A COMPUTER
+------------------------------------
+Open the PlastPOS folder in your Documents/Home folder (or wherever it
+was installed) and double-click "Uninstall.bat". You will be asked to
+choose:
+  1. Remove everything, including all saved data - permanent.
+  2. Remove the program only, keep all saved data in case you install
+     PlastPOS again later.
+  3. Cancel.
+
+REINSTALLING / UPDATING
+--------------------------
+Running "Install-To-This-PC.bat" again on a computer that already has
+PlastPOS will update it to whatever is on this flash drive, and will
+always keep the existing saved data - it will ask you to confirm first.
+
 TROUBLESHOOTING
 -----------------
 If Windows shows a security warning when you double-click the .bat
