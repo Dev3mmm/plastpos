@@ -19,6 +19,18 @@ const API = {
     localStorage.removeItem('plastpos_user');
   },
 
+  // A page fires several requests at once (Promise.all); if the session
+  // died they'd all hit 401 together and each try to re-render - this
+  // makes only the first one actually do it.
+  _loggedOutOnce: false,
+  _handleExpired() {
+    this.clearSession();
+    if (this._loggedOutOnce) return;
+    this._loggedOutOnce = true;
+    renderApp();
+    setTimeout(() => { this._loggedOutOnce = false; }, 500);
+  },
+
   async req(method, path, body) {
     const headers = { 'Content-Type': 'application/json' };
     if (this.token) headers['Authorization'] = 'Bearer ' + this.token;
@@ -33,8 +45,7 @@ const API = {
       throw new Error('Cannot reach the server. Check you are connected to the shop WiFi.');
     }
     if (res.status === 401) {
-      this.clearSession();
-      renderApp();
+      this._handleExpired();
       throw new Error('Session expired, please log in again.');
     }
     const data = await res.json().catch(() => ({}));
@@ -46,4 +57,24 @@ const API = {
   post(path, body) { return this.req('POST', path, body); },
   put(path, body) { return this.req('PUT', path, body); },
   del(path) { return this.req('DELETE', path); },
+
+  // For endpoints that take a photo (multipart/form-data) - deliberately
+  // separate from req() since it must NOT set a JSON content-type header.
+  async postForm(path, formData, method) {
+    const headers = {};
+    if (this.token) headers['Authorization'] = 'Bearer ' + this.token;
+    let res;
+    try {
+      res = await fetch(this.base + path, { method: method || 'POST', headers, body: formData });
+    } catch (err) {
+      throw new Error('Cannot reach the server. Check you are connected to the shop WiFi.');
+    }
+    if (res.status === 401) {
+      this._handleExpired();
+      throw new Error('Session expired, please log in again.');
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    return data;
+  },
 };

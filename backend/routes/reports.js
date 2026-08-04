@@ -29,7 +29,7 @@ router.get('/sales-summary', requireAuth('admin'), (req, res) => {
   res.json({ from, to, totals, byProduct, byDay });
 });
 
-router.get('/production-summary', requireAuth('admin', 'production'), (req, res) => {
+router.get('/production-summary', requireAuth('admin', 'cutting'), (req, res) => {
   const { from, to } = range(req);
   const byProduct = db.prepare(`SELECT products.name, products.size,
       SUM(qty_produced) as qty_produced, SUM(material_cost) as material_cost
@@ -39,7 +39,41 @@ router.get('/production-summary', requireAuth('admin', 'production'), (req, res)
   res.json({ from, to, byProduct });
 });
 
-router.get('/stock-levels', requireAuth('admin', 'production', 'cashier'), (req, res) => {
+// Day-by-day series for the dashboard charts: production, dispatches, sales
+// revenue, an approximate cost-of-goods (qty sold x each product's set unit
+// cost), manual expenses, and profit = revenue - cogs - expenses.
+router.get('/daily', requireAuth('admin'), (req, res) => {
+  const days = Math.min(Number(req.query.days) || 14, 90);
+  const since = new Date(Date.now() - days * 86400000).toISOString();
+
+  const produced = db.prepare(`SELECT date(produced_at) as day, SUM(qty_produced) as qty
+    FROM production_batches WHERE produced_at >= ? GROUP BY day`).all(since);
+  const dispatched = db.prepare(`SELECT date(dispatched_at) as day, SUM(qty) as qty
+    FROM dispatches WHERE dispatched_at >= ? GROUP BY day`).all(since);
+  const revenue = db.prepare(`SELECT date(sold_at) as day, SUM(total_amount) as revenue
+    FROM sales WHERE sold_at >= ? AND status != 'voided' GROUP BY day`).all(since);
+  const cogs = db.prepare(`SELECT date(sales.sold_at) as day, SUM(sale_items.qty * products.unit_cost) as cogs
+    FROM sale_items JOIN sales ON sales.id = sale_items.sale_id JOIN products ON products.id = sale_items.product_id
+    WHERE sales.sold_at >= ? AND sales.status != 'voided' GROUP BY day`).all(since);
+  const expenses = db.prepare(`SELECT date(recorded_at) as day, SUM(amount) as expenses
+    FROM cash_transactions WHERE recorded_at >= ? AND type = 'out' AND category = 'expense' GROUP BY day`).all(since);
+
+  const byDay = {};
+  const ensure = (day) => byDay[day] || (byDay[day] = { day, produced: 0, dispatched: 0, revenue: 0, cogs: 0, expenses: 0 });
+  produced.forEach(r => { ensure(r.day).produced = r.qty || 0; });
+  dispatched.forEach(r => { ensure(r.day).dispatched = r.qty || 0; });
+  revenue.forEach(r => { ensure(r.day).revenue = r.revenue || 0; });
+  cogs.forEach(r => { ensure(r.day).cogs = r.cogs || 0; });
+  expenses.forEach(r => { ensure(r.day).expenses = r.expenses || 0; });
+
+  const series = Object.values(byDay)
+    .map(d => ({ ...d, profit: d.revenue - d.cogs - d.expenses }))
+    .sort((a, b) => a.day.localeCompare(b.day));
+
+  res.json({ days, series });
+});
+
+router.get('/stock-levels', requireAuth('admin', 'cutting', 'cashier', 'input', 'distribution'), (req, res) => {
   const products = db.prepare('SELECT id, name, size, stock_qty, low_stock_threshold, unit_price FROM products WHERE active = 1').all();
   const materials = db.prepare('SELECT id, name, unit, stock_qty, low_stock_threshold, avg_cost FROM raw_materials').all();
   res.json({ products, materials });

@@ -2,10 +2,12 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const db = require('./db');
+const { uploadsDir } = require('./middleware/upload');
 
 const authRoutes = require('./routes/auth');
 const { router: inventoryRoutes } = require('./routes/inventory');
 const productionRoutes = require('./routes/production');
+const stagesRoutes = require('./routes/stages');
 const salesRoutes = require('./routes/sales');
 const purchasesRoutes = require('./routes/purchases');
 const customersRoutes = require('./routes/customers');
@@ -13,9 +15,12 @@ const cashbookRoutes = require('./routes/cashbook');
 const reportsRoutes = require('./routes/reports');
 const tipsRoutes = require('./routes/tips');
 const backupRoutes = require('./routes/backup');
+const payrollRoutes = require('./routes/payroll');
+const shiftsRoutes = require('./routes/shifts');
 
-// Seed the three bag sizes on first run so the app isn't empty out of the box.
-// Everything here (name, price, BOM) is editable later from the Inventory screen.
+// Seed the production chain on first run so the app isn't empty out of the
+// box: beads -> rolls (input stage) -> bag packets (cutting stage, via BOM).
+// Everything here is editable later from the Inventory screen.
 function seedIfEmpty() {
   const count = db.prepare('SELECT COUNT(*) as n FROM products').get().n;
   if (count > 0) return;
@@ -27,16 +32,15 @@ function seedIfEmpty() {
 
   const insertMaterial = db.prepare(`INSERT INTO raw_materials (name, unit, low_stock_threshold)
     VALUES (?, ?, ?)`);
-  const m1 = insertMaterial.run('Kraft Paper Roll', 'kg', 50);
-  const m2 = insertMaterial.run('Ink', 'kg', 5);
+  const beads = insertMaterial.run('Plastic Beads', 'kg', 100);
+  const rolls = insertMaterial.run('Plastic Roll', 'kg', 50);
 
   const insertBom = db.prepare('INSERT INTO bom (product_id, material_id, qty_per_unit) VALUES (?, ?, ?)');
-  // Placeholder BOM ratios - adjust from the Inventory > Bill of Materials screen
-  // to match the actual paper weight/waste factor for each bag size.
-  for (const [productId, paperQty] of [[p1.lastInsertRowid, 0.03], [p2.lastInsertRowid, 0.055], [p3.lastInsertRowid, 0.1]]) {
-    insertBom.run(productId, m1.lastInsertRowid, paperQty);
-    insertBom.run(productId, m2.lastInsertRowid, paperQty * 0.05);
-  }
+  // Placeholder BOM ratios (roll kg consumed per bag) - adjust from
+  // Inventory > Bill of Materials to match the real waste factor per size.
+  insertBom.run(p1.lastInsertRowid, rolls.lastInsertRowid, 0.03);
+  insertBom.run(p2.lastInsertRowid, rolls.lastInsertRowid, 0.055);
+  insertBom.run(p3.lastInsertRowid, rolls.lastInsertRowid, 0.1);
 }
 seedIfEmpty();
 
@@ -47,6 +51,7 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/production', productionRoutes);
+app.use('/api/stages', stagesRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/purchases', purchasesRoutes);
 app.use('/api/customers', customersRoutes);
@@ -54,14 +59,20 @@ app.use('/api/cashbook', cashbookRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/tips', tipsRoutes);
 app.use('/api/backup', backupRoutes);
+app.use('/api/payroll', payrollRoutes);
+app.use('/api/shifts', shiftsRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// Stage photo proof (input/cutting/dispatch) - not auth-gated by design:
+// filenames are random and unlisted, and this is a trusted LAN app.
+app.use('/uploads', express.static(uploadsDir));
 
 // Serve the PWA frontend
 const frontendDir = path.join(__dirname, '..', 'frontend');
 app.use(express.static(frontendDir));
 app.get('*', (req, res, next) => {
-  if (req.path.startsWith('/api/')) return next();
+  if (req.path.startsWith('/api/') || req.path.startsWith('/uploads/')) return next();
   res.sendFile(path.join(frontendDir, 'index.html'));
 });
 

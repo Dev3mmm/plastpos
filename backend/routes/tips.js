@@ -8,8 +8,25 @@ const router = express.Router();
 // and applies straightforward rules. Cheap, instant, and never wrong in a
 // way an LLM hallucination could be. See docs/AI_TIPS.md for how to upgrade
 // this to a local LLM (Ollama) later without changing the API shape.
-router.get('/', requireAuth('admin', 'cashier', 'production'), (req, res) => {
+router.get('/', requireAuth('admin', 'cashier', 'input', 'cutting', 'distribution'), (req, res) => {
   const tips = [];
+
+  // Daily rollover: called out first and loudly, so a stage that produced
+  // nothing yesterday can't quietly slide into today's report unnoticed.
+  if (req.user.role === 'admin') {
+    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+    const stageChecks = [
+      { label: 'Input (beads -> rolls)', table: 'material_conversions', col: 'created_at' },
+      { label: 'Cutting (rolls -> bags)', table: 'production_batches', col: 'produced_at' },
+      { label: 'Distribution', table: 'dispatches', col: 'dispatched_at' },
+    ];
+    for (const s of stageChecks) {
+      const row = db.prepare(`SELECT COUNT(*) as n FROM ${s.table} WHERE date(${s.col}) = ?`).get(yesterday);
+      if (row.n === 0) {
+        tips.push({ level: 'warning', area: 'rollover', message: `Yesterday (${yesterday}): ${s.label} logged nothing. Worth asking why before today's numbers roll in on top.` });
+      }
+    }
+  }
 
   const lowStockProducts = db.prepare(`SELECT * FROM products
     WHERE active = 1 AND stock_qty <= low_stock_threshold`).all();
