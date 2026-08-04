@@ -8,7 +8,7 @@ const router = express.Router();
 // and applies straightforward rules. Cheap, instant, and never wrong in a
 // way an LLM hallucination could be. See docs/AI_TIPS.md for how to upgrade
 // this to a local LLM (Ollama) later without changing the API shape.
-router.get('/', requireAuth('admin', 'cashier', 'input', 'cutting', 'distribution'), (req, res) => {
+router.get('/', requireAuth('admin', 'cashier', 'input', 'cutting', 'picking', 'distribution'), (req, res) => {
   const tips = [];
   const role = req.user.role;
 
@@ -19,7 +19,8 @@ router.get('/', requireAuth('admin', 'cashier', 'input', 'cutting', 'distributio
     const stageChecks = [
       { label: 'Plant Operator', table: 'material_conversions', col: 'created_at' },
       { label: 'Packaging', table: 'production_batches', col: 'produced_at' },
-      { label: 'Picking', table: 'dispatches', col: 'dispatched_at' },
+      { label: 'Picking', table: 'picking_logs', col: 'created_at' },
+      { label: 'Delivery', table: 'dispatches', col: 'dispatched_at' },
     ];
     for (const s of stageChecks) {
       const row = db.prepare(`SELECT COUNT(*) as n FROM ${s.table} WHERE date(${s.col}) = ?`).get(yesterday);
@@ -67,55 +68,59 @@ router.get('/', requireAuth('admin', 'cashier', 'input', 'cutting', 'distributio
     });
   }
 
-  // Sales trend: this week vs last week, per product
-  const trend = db.prepare(`
-    SELECT products.id, products.name, products.size,
-      SUM(CASE WHEN sales.sold_at >= datetime('now','-7 days') THEN sale_items.qty ELSE 0 END) as this_week,
-      SUM(CASE WHEN sales.sold_at >= datetime('now','-14 days') AND sales.sold_at < datetime('now','-7 days')
-        THEN sale_items.qty ELSE 0 END) as last_week
-    FROM sale_items
-    JOIN sales ON sales.id = sale_items.sale_id AND sales.status != 'voided'
-    JOIN products ON products.id = sale_items.product_id
-    GROUP BY products.id`).all();
-  for (const t of trend) {
-    if (t.last_week >= 5 && t.this_week < t.last_week * 0.6) {
-      const drop = Math.round((1 - t.this_week / t.last_week) * 100);
+  // Everything below is money/client information - admin only. Workers only
+  // ever see stock and order tips relevant to their own job (above).
+  if (role === 'admin') {
+    // Sales trend: this week vs last week, per product
+    const trend = db.prepare(`
+      SELECT products.id, products.name, products.size,
+        SUM(CASE WHEN sales.sold_at >= datetime('now','-7 days') THEN sale_items.qty ELSE 0 END) as this_week,
+        SUM(CASE WHEN sales.sold_at >= datetime('now','-14 days') AND sales.sold_at < datetime('now','-7 days')
+          THEN sale_items.qty ELSE 0 END) as last_week
+      FROM sale_items
+      JOIN sales ON sales.id = sale_items.sale_id AND sales.status != 'voided'
+      JOIN products ON products.id = sale_items.product_id
+      GROUP BY products.id`).all();
+    for (const t of trend) {
+      if (t.last_week >= 5 && t.this_week < t.last_week * 0.6) {
+        const drop = Math.round((1 - t.this_week / t.last_week) * 100);
+        tips.push({
+          level: 'info',
+          area: 'sales',
+          message: `${t.name} (${t.size}) sold ${drop}% less this week than last week (${t.last_week} -> ${t.this_week}). Worth checking why.`,
+        });
+      }
+      if (t.this_week >= t.last_week * 1.5 && t.this_week >= 5) {
+        tips.push({
+          level: 'info',
+          area: 'sales',
+          message: `${t.name} (${t.size}) is selling more this week (${t.last_week} -> ${t.this_week}). Keep enough in stock.`,
+        });
+      }
+    }
+
+    // Outstanding customer credit
+    const credit = db.prepare(`SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as n FROM customers WHERE balance > 0`).get();
+    if (credit.total > 0) {
       tips.push({
         level: 'info',
-        area: 'sales',
-        message: `${t.name} (${t.size}) sold ${drop}% less this week than last week (${t.last_week} -> ${t.this_week}). Worth checking why.`,
+        area: 'credit',
+        message: `${credit.n} customer(s) owe a total of ${credit.total.toFixed(2)}. Ask them to pay, oldest first.`,
       });
     }
-    if (t.this_week >= t.last_week * 1.5 && t.this_week >= 5) {
+
+    // Cash position sanity check
+    const cash = db.prepare(`SELECT
+        COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0) -
+        COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0) as balance
+      FROM cash_transactions`).get();
+    if (cash.balance < 0) {
       tips.push({
-        level: 'info',
-        area: 'sales',
-        message: `${t.name} (${t.size}) is selling more this week (${t.last_week} -> ${t.this_week}). Keep enough in stock.`,
+        level: 'warning',
+        area: 'cash',
+        message: `Cash balance is negative (${cash.balance.toFixed(2)}). Some money in or out may be missing - check the Cash Book.`,
       });
     }
-  }
-
-  // Outstanding customer credit
-  const credit = db.prepare(`SELECT COALESCE(SUM(balance),0) as total, COUNT(*) as n FROM customers WHERE balance > 0`).get();
-  if (credit.total > 0) {
-    tips.push({
-      level: 'info',
-      area: 'credit',
-      message: `${credit.n} customer(s) owe a total of ${credit.total.toFixed(2)}. Ask them to pay, oldest first.`,
-    });
-  }
-
-  // Cash position sanity check
-  const cash = db.prepare(`SELECT
-      COALESCE(SUM(CASE WHEN type='in' THEN amount ELSE 0 END),0) -
-      COALESCE(SUM(CASE WHEN type='out' THEN amount ELSE 0 END),0) as balance
-    FROM cash_transactions`).get();
-  if (cash.balance < 0) {
-    tips.push({
-      level: 'warning',
-      area: 'cash',
-      message: `Cash balance is negative (${cash.balance.toFixed(2)}). Some money in or out may be missing - check the Cash Book.`,
-    });
   }
 
   if (tips.length === 0) {

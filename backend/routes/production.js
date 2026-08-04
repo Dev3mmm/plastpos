@@ -8,6 +8,8 @@ const router = express.Router();
 
 // This is the Cutting stage: rolls (raw material, via BOM) in, bag packets
 // (product) out. Table/route names kept as "production" for history.
+// Workers only ever see their own batches here - admin is the only one
+// who sees everyone's (via the Dashboard activity feed / Reports).
 router.get('/', requireAuth('admin', 'cutting'), (req, res) => {
   const { from, to } = req.query;
   let sql = `SELECT production_batches.*, products.name as product_name, products.size,
@@ -17,6 +19,7 @@ router.get('/', requireAuth('admin', 'cutting'), (req, res) => {
     LEFT JOIN users ON users.id = production_batches.operator_id
     WHERE 1=1`;
   const params = [];
+  if (req.user.role !== 'admin') { sql += ' AND production_batches.operator_id = ?'; params.push(req.user.userId); }
   if (from) { sql += ' AND produced_at >= ?'; params.push(from); }
   if (to) { sql += ' AND produced_at <= ?'; params.push(to); }
   sql += ' ORDER BY produced_at DESC LIMIT 500';

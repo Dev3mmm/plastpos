@@ -3,7 +3,7 @@ const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
-const ALL_ROLES = ['admin', 'cashier', 'input', 'cutting', 'distribution'];
+const ALL_ROLES = ['admin', 'cashier', 'input', 'cutting', 'picking', 'distribution'];
 
 // A customer order is a request, not a sale - no money changes hands here.
 // Picking closes it out by logging a delivery (see stages.js dispatch,
@@ -11,6 +11,7 @@ const ALL_ROLES = ['admin', 'cashier', 'input', 'cutting', 'distribution'];
 router.get('/', requireAuth(...ALL_ROLES), (req, res) => {
   const { status } = req.query;
   let sql = `SELECT orders.*, customers.name as customer_name, customers.phone as customer_phone,
+      customers.location as customer_location,
       products.name as product_name, products.size, products.stock_qty as product_stock
     FROM orders
     JOIN customers ON customers.id = orders.customer_id

@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { createSession, destroySession, requireAuth } = require('../middleware/auth');
 
-const VALID_ROLES = ['admin', 'cashier', 'input', 'cutting', 'distribution'];
+const VALID_ROLES = ['admin', 'input', 'cutting', 'picking', 'distribution'];
 
 const router = express.Router();
 
@@ -96,7 +96,7 @@ router.get('/users', (req, res) => {
 // schedule for the Settings screen (kept separate from the public picker
 // above so pay rates aren't exposed pre-login)
 router.get('/users/detailed', requireAuth('admin'), (req, res) => {
-  res.json(db.prepare('SELECT id, name, role, piece_rate, shift_start, shift_end FROM users WHERE active = 1').all());
+  res.json(db.prepare('SELECT id, name, role, piece_rate, pay_type, shift_start, shift_end FROM users WHERE active = 1').all());
 });
 
 // ---- "I forgot my PIN" - a pre-login ping to admin, since there's no
@@ -142,24 +142,29 @@ router.post('/users', requireAuth('admin'), (req, res) => {
   }
   if (!pin) pin = String(Math.floor(1000 + Math.random() * 9000));
   const piece_rate = req.body.piece_rate;
+  const PAY_TYPES = ['piece', 'shift', 'trip', 'monthly'];
+  const pay_type = PAY_TYPES.includes(req.body.pay_type) ? req.body.pay_type : 'piece';
   const pinHash = bcrypt.hashSync(String(pin), 8);
-  const info = db.prepare('INSERT INTO users (name, pin_hash, role, piece_rate) VALUES (?, ?, ?, ?)')
-    .run(name, pinHash, role, Number(piece_rate) || 0);
-  res.json({ id: info.lastInsertRowid, name, role, piece_rate: Number(piece_rate) || 0, pin });
+  const info = db.prepare('INSERT INTO users (name, pin_hash, role, piece_rate, pay_type) VALUES (?, ?, ?, ?, ?)')
+    .run(name, pinHash, role, Number(piece_rate) || 0, pay_type);
+  res.json({ id: info.lastInsertRowid, name, role, piece_rate: Number(piece_rate) || 0, pay_type, pin });
 });
 
 // PUT /api/auth/users/:id - admin edits an existing staff account's pay
-// rate and/or shift schedule (shift_start/shift_end as "HH:MM", used for
-// the on-WiFi shift alarm)
+// rate/type and/or shift schedule (shift_start/shift_end as "HH:MM", used
+// for the on-WiFi shift alarm - a worker can also set their own via
+// PUT /api/shifts/schedule)
 router.put('/users/:id', requireAuth('admin'), (req, res) => {
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'Not found' });
   const { piece_rate, name, shift_start, shift_end } = req.body;
-  db.prepare('UPDATE users SET name = ?, piece_rate = ?, shift_start = ?, shift_end = ? WHERE id = ?')
-    .run(name ?? user.name, piece_rate != null ? Number(piece_rate) : user.piece_rate,
+  const PAY_TYPES = ['piece', 'shift', 'trip', 'monthly'];
+  const pay_type = PAY_TYPES.includes(req.body.pay_type) ? req.body.pay_type : user.pay_type;
+  db.prepare('UPDATE users SET name = ?, piece_rate = ?, pay_type = ?, shift_start = ?, shift_end = ? WHERE id = ?')
+    .run(name ?? user.name, piece_rate != null ? Number(piece_rate) : user.piece_rate, pay_type,
       shift_start !== undefined ? shift_start : user.shift_start,
       shift_end !== undefined ? shift_end : user.shift_end, req.params.id);
-  res.json(db.prepare('SELECT id, name, role, piece_rate, shift_start, shift_end FROM users WHERE id = ?').get(req.params.id));
+  res.json(db.prepare('SELECT id, name, role, piece_rate, pay_type, shift_start, shift_end FROM users WHERE id = ?').get(req.params.id));
 });
 
 // DELETE /api/auth/users/:id - admin deactivates a staff account

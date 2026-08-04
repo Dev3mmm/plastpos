@@ -17,17 +17,18 @@ router.get('/:id', requireAuth('admin', 'cashier'), (req, res) => {
 });
 
 router.post('/', requireAuth('admin', 'cashier'), (req, res) => {
-  const { name, phone } = req.body;
+  const { name, phone, location } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
-  const info = db.prepare('INSERT INTO customers (name, phone) VALUES (?, ?)').run(name, phone || '');
+  const info = db.prepare('INSERT INTO customers (name, phone, location) VALUES (?, ?, ?)').run(name, phone || '', location || '');
   res.json(db.prepare('SELECT * FROM customers WHERE id = ?').get(info.lastInsertRowid));
 });
 
 router.put('/:id', requireAuth('admin', 'cashier'), (req, res) => {
   const c = db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: 'Not found' });
-  const { name, phone } = req.body;
-  db.prepare('UPDATE customers SET name=?, phone=? WHERE id=?').run(name ?? c.name, phone ?? c.phone, req.params.id);
+  const { name, phone, location } = req.body;
+  db.prepare('UPDATE customers SET name=?, phone=?, location=? WHERE id=?')
+    .run(name ?? c.name, phone ?? c.phone, location ?? c.location, req.params.id);
   res.json(db.prepare('SELECT * FROM customers WHERE id = ?').get(req.params.id));
 });
 

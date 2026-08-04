@@ -57,10 +57,10 @@ router.get('/materials', (req, res) => {
 });
 
 router.post('/materials', requireAuth('admin'), (req, res) => {
-  const { name, unit, low_stock_threshold } = req.body;
+  const { name, unit, low_stock_threshold, sack_weight_kg } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
-  const info = db.prepare('INSERT INTO raw_materials (name, unit, low_stock_threshold) VALUES (?, ?, ?)')
-    .run(name, unit || 'kg', low_stock_threshold || 0);
+  const info = db.prepare('INSERT INTO raw_materials (name, unit, low_stock_threshold, sack_weight_kg) VALUES (?, ?, ?, ?)')
+    .run(name, unit || 'kg', low_stock_threshold || 0, sack_weight_kg || null);
   res.json(db.prepare('SELECT * FROM raw_materials WHERE id = ?').get(info.lastInsertRowid));
 });
 
@@ -71,10 +71,11 @@ router.put('/materials/:id', requireAuth('admin'), (req, res) => {
   const { name, unit, low_stock_threshold, stock_qty, avg_cost } = req.body;
   const m = db.prepare('SELECT * FROM raw_materials WHERE id = ?').get(req.params.id);
   if (!m) return res.status(404).json({ error: 'Not found' });
-  db.prepare('UPDATE raw_materials SET name=?, unit=?, low_stock_threshold=?, stock_qty=?, avg_cost=? WHERE id=?')
+  const sack_weight_kg = req.body.sack_weight_kg !== undefined ? (req.body.sack_weight_kg || null) : m.sack_weight_kg;
+  db.prepare('UPDATE raw_materials SET name=?, unit=?, low_stock_threshold=?, stock_qty=?, avg_cost=?, sack_weight_kg=? WHERE id=?')
     .run(name ?? m.name, unit ?? m.unit, low_stock_threshold ?? m.low_stock_threshold,
       stock_qty != null ? Number(stock_qty) : m.stock_qty,
-      avg_cost != null ? Number(avg_cost) : m.avg_cost, req.params.id);
+      avg_cost != null ? Number(avg_cost) : m.avg_cost, sack_weight_kg, req.params.id);
   if (stock_qty != null && Number(stock_qty) !== m.stock_qty) {
     logMovement('material', req.params.id, Number(stock_qty) - m.stock_qty, 'manual correction');
   }

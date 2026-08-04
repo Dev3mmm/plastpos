@@ -8,7 +8,9 @@ const router = express.Router();
 
 // ---------------- Input stage: beads in, rolls out ----------------
 
+// Workers only see their own entries here - admin sees everyone's.
 router.get('/input', requireAuth('admin', 'input'), (req, res) => {
+  const own = req.user.role !== 'admin';
   const rows = db.prepare(`SELECT material_conversions.*, users.name as operator_name,
       im.name as input_material_name, im.unit as input_unit,
       om.name as output_material_name, om.unit as output_unit,
@@ -18,7 +20,8 @@ router.get('/input', requireAuth('admin', 'input'), (req, res) => {
     LEFT JOIN machines ON machines.id = material_conversions.machine_id
     JOIN raw_materials im ON im.id = material_conversions.input_material_id
     JOIN raw_materials om ON om.id = material_conversions.output_material_id
-    ORDER BY created_at DESC LIMIT 200`).all();
+    WHERE ${own ? 'material_conversions.operator_id = ?' : '1=1'}
+    ORDER BY created_at DESC LIMIT 200`).all(...(own ? [req.user.userId] : []));
   res.json(rows);
 });
 
@@ -88,15 +91,47 @@ router.post('/electricity', requireAuth('admin', 'input'), (req, res) => {
   res.json(db.prepare('SELECT * FROM electricity_logs WHERE id = ?').get(info.lastInsertRowid));
 });
 
-// ---------------- Distribution stage: packets out to a person/place ----------------
+// ---------------- Picking: collects packed packets from Packaging ----------------
+// Different job from Delivery below - this is the internal handoff, not the
+// vehicle run to a customer. Doesn't move stock (Packaging already did),
+// it's a confirmation/traceability record and the basis for Picking's pay.
+
+router.get('/picking', requireAuth('admin', 'picking'), (req, res) => {
+  const own = req.user.role !== 'admin';
+  const rows = db.prepare(`SELECT picking_logs.*, products.name as product_name, products.size,
+      users.name as operator_name
+    FROM picking_logs
+    JOIN products ON products.id = picking_logs.product_id
+    LEFT JOIN users ON users.id = picking_logs.operator_id
+    WHERE ${own ? 'picking_logs.operator_id = ?' : '1=1'}
+    ORDER BY created_at DESC LIMIT 200`).all(...(own ? [req.user.userId] : []));
+  res.json(rows);
+});
+
+router.post('/picking', requireAuth('admin', 'picking'), upload.single('photo'), (req, res) => {
+  const { product_id, notes } = req.body;
+  const qty = Number(req.body.qty);
+  if (!product_id || !qty || qty <= 0) return res.status(400).json({ error: 'product and a positive qty are required' });
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(product_id);
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+
+  const info = db.prepare(`INSERT INTO picking_logs (product_id, qty, operator_id, photo_path, notes)
+    VALUES (?, ?, ?, ?, ?)`).run(product_id, qty, req.user.userId, req.file ? req.file.filename : null, notes || '');
+  res.json(db.prepare(`SELECT picking_logs.*, products.name as product_name FROM picking_logs
+    JOIN products ON products.id = picking_logs.product_id WHERE picking_logs.id = ?`).get(info.lastInsertRowid));
+});
+
+// ---------------- Delivery (role: distribution): packets out to a person/place ----------------
 
 router.get('/dispatch', requireAuth('admin', 'distribution'), (req, res) => {
+  const own = req.user.role !== 'admin';
   const rows = db.prepare(`SELECT dispatches.*, products.name as product_name, products.size,
       users.name as operator_name
     FROM dispatches
     JOIN products ON products.id = dispatches.product_id
     LEFT JOIN users ON users.id = dispatches.operator_id
-    ORDER BY dispatched_at DESC LIMIT 200`).all();
+    WHERE ${own ? 'dispatches.operator_id = ?' : '1=1'}
+    ORDER BY dispatched_at DESC LIMIT 200`).all(...(own ? [req.user.userId] : []));
   res.json(rows);
 });
 
@@ -192,6 +227,7 @@ router.get('/today-status', requireAuth('admin'), (req, res) => {
 
   const input = counts('material_conversions', 'created_at');
   const cutting = counts('production_batches', 'produced_at');
+  const picking = counts('picking_logs', 'created_at');
   const distribution = counts('dispatches', 'dispatched_at');
   const cashier = counts('sales', 'sold_at');
 
@@ -207,6 +243,9 @@ router.get('/today-status', requireAuth('admin'), (req, res) => {
     cutting: db.prepare(`SELECT production_batches.*, products.name as product_name, users.name as operator_name
       FROM production_batches JOIN products ON products.id = production_batches.product_id
       LEFT JOIN users ON users.id = production_batches.operator_id ORDER BY produced_at DESC LIMIT 5`).all(),
+    picking: db.prepare(`SELECT picking_logs.*, products.name as product_name, users.name as operator_name
+      FROM picking_logs JOIN products ON products.id = picking_logs.product_id
+      LEFT JOIN users ON users.id = picking_logs.operator_id ORDER BY created_at DESC LIMIT 5`).all(),
     distribution: db.prepare(`SELECT dispatches.*, products.name as product_name, users.name as operator_name
       FROM dispatches JOIN products ON products.id = dispatches.product_id
       LEFT JOIN users ON users.id = dispatches.operator_id ORDER BY dispatched_at DESC LIMIT 5`).all(),
@@ -219,7 +258,8 @@ router.get('/today-status', requireAuth('admin'), (req, res) => {
     stages: [
       { role: 'input', label: 'Plant Operator', today_count: input.today_count || 0, yesterday_count: input.yesterday_count || 0, latest: latest.input },
       { role: 'cutting', label: 'Packaging', today_count: cutting.today_count || 0, yesterday_count: cutting.yesterday_count || 0, latest: latest.cutting },
-      { role: 'distribution', label: 'Picking', today_count: distribution.today_count || 0, yesterday_count: distribution.yesterday_count || 0, latest: latest.distribution },
+      { role: 'picking', label: 'Picking', today_count: picking.today_count || 0, yesterday_count: picking.yesterday_count || 0, latest: latest.picking },
+      { role: 'distribution', label: 'Delivery', today_count: distribution.today_count || 0, yesterday_count: distribution.yesterday_count || 0, latest: latest.distribution },
       { role: 'cashier', label: 'Cashier / POS', today_count: cashier.today_count || 0, yesterday_count: cashier.yesterday_count || 0, latest: latest.cashier },
     ],
   });

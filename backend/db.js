@@ -42,17 +42,19 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 -- Roles map to the physical stages of making a bag:
---   input       - feeds plastic beads into the extruder, logs rolls produced
---   cutting     - cuts rolls into bag packets by size (0.5kg/1kg/2kg)
---   distribution - takes finished packets out to a distributor/location
---   cashier     - runs the POS
---   admin       - sees and manages everything
+--   input        - feeds plastic beads into the extruder, logs rolls produced
+--   cutting      - cuts rolls into bag packets by size (0.5kg/1kg/2kg)
+--   picking      - collects the packed packets from Packaging (internal handoff)
+--   distribution - (labelled "Delivery") takes packets out to a customer/location by vehicle
+--   cashier      - runs the POS
+--   admin        - sees and manages everything
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   pin_hash TEXT NOT NULL,
-  role TEXT NOT NULL CHECK(role IN ('admin','cashier','input','cutting','distribution')),
+  role TEXT NOT NULL CHECK(role IN ('admin','cashier','input','cutting','picking','distribution')),
   piece_rate REAL NOT NULL DEFAULT 0,
+  pay_type TEXT NOT NULL DEFAULT 'piece' CHECK(pay_type IN ('piece','shift','trip','monthly')),
   active INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 );
@@ -69,6 +71,11 @@ CREATE TABLE IF NOT EXISTS products (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Stock is always tracked in kg internally (that's what a machine actually
+-- consumes), but a material can optionally be sold in sacks of a fixed
+-- weight - sack_weight_kg lets the Purchases screen accept "N sacks at
+-- cost each" and convert to kg/cost-per-kg automatically, matching how
+-- it's actually bought, without a second stock ledger to keep in sync.
 CREATE TABLE IF NOT EXISTS raw_materials (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -76,6 +83,7 @@ CREATE TABLE IF NOT EXISTS raw_materials (
   stock_qty REAL NOT NULL DEFAULT 0,
   low_stock_threshold REAL NOT NULL DEFAULT 0,
   avg_cost REAL NOT NULL DEFAULT 0,
+  sack_weight_kg REAL,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -204,6 +212,22 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 
+-- Picking: a separate job from Delivery - this is the person who physically
+-- collects the packed packets from Packaging (an internal handoff), not the
+-- one taking them out to a customer. A confirmation/traceability record and
+-- the basis for the Picking role's pay - it does not itself move stock,
+-- since Packaging already credited stock_qty when the batch was logged.
+CREATE TABLE IF NOT EXISTS picking_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  product_id INTEGER NOT NULL REFERENCES products(id),
+  qty REAL NOT NULL,
+  operator_id INTEGER REFERENCES users(id),
+  photo_path TEXT,
+  notes TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_picking_date ON picking_logs(created_at);
+
 -- "I forgot my PIN / typed it wrong" - a public (pre-login) ping to admin
 -- asking for a reset, since there's no email/SMS to send one automatically.
 CREATE TABLE IF NOT EXISTS pin_reset_requests (
@@ -229,6 +253,7 @@ CREATE TABLE IF NOT EXISTS customers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   phone TEXT,
+  location TEXT,
   balance REAL NOT NULL DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
 );
@@ -326,5 +351,8 @@ tryAddColumn('dispatches', 'payment_method TEXT');
 tryAddColumn('dispatches', 'paid INTEGER NOT NULL DEFAULT 0');
 tryAddColumn('material_conversions', 'machine_id INTEGER REFERENCES machines(id)');
 tryAddColumn('dispatches', 'order_id INTEGER REFERENCES orders(id)');
+tryAddColumn('raw_materials', 'sack_weight_kg REAL');
+tryAddColumn('users', "pay_type TEXT NOT NULL DEFAULT 'piece'");
+tryAddColumn('customers', 'location TEXT');
 
 module.exports = db;
