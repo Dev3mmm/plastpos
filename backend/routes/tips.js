@@ -31,7 +31,10 @@ router.get('/', requireAuth('admin', 'cashier', 'input', 'cutting', 'picking', '
   }
 
   // Orders waiting on stock that isn't there yet - shown to the people who
-  // can actually fix it (Packaging, Plant Operator) as well as admin.
+  // can actually fix it (Packaging, Plant Operator) as well as admin. Who
+  // the order is FOR is customer information, not a production detail - only
+  // admin (who deals with customers) sees the name; Packaging/Plant Operator
+  // just get told what to make.
   if (['admin', 'cutting', 'input'].includes(role)) {
     const shortOrders = db.prepare(`SELECT orders.id, orders.qty, customers.name as customer_name,
         products.name as product_name, products.size, products.stock_qty
@@ -41,31 +44,50 @@ router.get('/', requireAuth('admin', 'cashier', 'input', 'cutting', 'picking', '
       WHERE orders.status = 'pending' AND products.stock_qty < orders.qty`).all();
     for (const o of shortOrders) {
       const short = o.qty - o.stock_qty;
+      const message = role === 'admin'
+        ? `Order for ${esc(o.customer_name)}: needs ${o.qty} x ${esc(o.product_name)} (${esc(o.size)}), only ${o.stock_qty} in stock. Make ${short} more to fill this order.`
+        : `A pending order needs ${short} more x ${esc(o.product_name)} (${esc(o.size)}) - only ${o.stock_qty} in stock right now.`;
+      tips.push({ level: 'warning', area: 'orders', message });
+    }
+  }
+
+  // Finished bags running low - Packaging is the one who cuts more from
+  // roll stock, so it's their tip (and admin's), not everyone's.
+  if (['admin', 'cutting'].includes(role)) {
+    const lowStockProducts = db.prepare(`SELECT * FROM products
+      WHERE active = 1 AND stock_qty <= low_stock_threshold`).all();
+    for (const p of lowStockProducts) {
       tips.push({
         level: 'warning',
-        area: 'orders',
-        message: `Order for ${esc(o.customer_name)}: needs ${o.qty} x ${esc(o.product_name)} (${esc(o.size)}), only ${o.stock_qty} in stock. Make ${short} more to fill this order.`,
+        area: 'inventory',
+        message: `${p.name} (${p.size}) is running low: only ${p.stock_qty} left. Make more soon.`,
       });
     }
   }
 
-  const lowStockProducts = db.prepare(`SELECT * FROM products
-    WHERE active = 1 AND stock_qty <= low_stock_threshold`).all();
-  for (const p of lowStockProducts) {
-    tips.push({
-      level: 'warning',
-      area: 'inventory',
-      message: `${p.name} (${p.size}) is running low: only ${p.stock_qty} left. Make more soon.`,
-    });
-  }
-
-  const lowMaterials = db.prepare(`SELECT * FROM raw_materials WHERE stock_qty <= low_stock_threshold`).all();
-  for (const m of lowMaterials) {
-    tips.push({
-      level: 'warning',
-      area: 'materials',
-      message: `${m.name} is running low: only ${m.stock_qty}${m.unit} left. Buy more soon or work will stop.`,
-    });
+  // A raw material that has ever come OUT of the machine (e.g. rolls made
+  // from beads) can be restocked by the Plant Operator just by feeding the
+  // machine more - so that one's their tip too, alongside admin's. A
+  // material that's only ever bought in (e.g. the beads themselves) is
+  // admin's call alone, since only admin records purchases.
+  if (['admin', 'input'].includes(role)) {
+    const producedMaterialIds = new Set(
+      db.prepare(`SELECT DISTINCT output_material_id FROM material_conversions`).all().map(r => r.output_material_id)
+    );
+    const lowMaterials = db.prepare(`SELECT * FROM raw_materials WHERE stock_qty <= low_stock_threshold`).all();
+    for (const m of lowMaterials) {
+      const isProduced = producedMaterialIds.has(m.id);
+      // Plant Operator only sees the ones they can personally make more of -
+      // buying-decision materials (like the beads) stay admin-only.
+      if (role === 'input' && !isProduced) continue;
+      tips.push({
+        level: 'warning',
+        area: 'materials',
+        message: isProduced
+          ? `${m.name} is running low: only ${m.stock_qty}${m.unit} left. Feed the machine to make more.`
+          : `${m.name} is running low: only ${m.stock_qty}${m.unit} left. Buy more soon or work will stop.`,
+      });
+    }
   }
 
   // Everything below is money/client information - admin only. Workers only

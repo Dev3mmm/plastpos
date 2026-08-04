@@ -9,6 +9,7 @@ const app = document.getElementById('app');
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 function money(n) { const cur = state.settings.currency || 'KES'; return `${cur} ${Number(n || 0).toFixed(2)}`; }
 function dt(s) { if (!s) return ''; return String(s).replace('T', ' ').slice(0, 16); }
+function packLabel(m) { return (m && m.pack_unit_label) ? m.pack_unit_label : 'sack'; }
 function shortDay(s) { return String(s).slice(5); } // "2026-08-04" -> "08-04"
 
 // Hand-rolled inline SVG line chart - no charting library, so the app stays
@@ -194,12 +195,27 @@ async function renderApp() {
   const navHtml = NAV.filter(n => n.roles.includes(user.role))
     .map(n => `<a href="${n.path}" class="${route.startsWith(n.path) ? 'active' : ''}">${n.label}</a>`).join('');
 
+  // Orders that can't be filled from current stock - shown as a loud alert
+  // at the top of every page (not buried in the tips card), to whoever can
+  // actually fix it: admin and Packaging (the only ones who can make more).
+  let alertHtml = '';
+  if (['admin', 'cutting', 'input'].includes(user.role)) {
+    try {
+      const tipsData = await API.get('/tips');
+      const orderAlerts = (tipsData.tips || []).filter(t => t.area === 'orders');
+      if (orderAlerts.length) {
+        alertHtml = `<div class="overhead-alert">${orderAlerts.map(t => `<div class="tip warning">${esc(t.message)}</div>`).join('')}</div>`;
+      }
+    } catch (e) { /* not logged in yet or offline - the page below will handle it */ }
+  }
+
   app.innerHTML = `
     <div class="header">
       <div><h1>${esc(state.settings.business_name || 'PlastPOS')}</h1><div class="sub">${esc(user.name)} · ${esc(user.role)}</div></div>
       <button onclick="actions.logout()">Log out</button>
     </div>
     <div class="nav">${navHtml}</div>
+    ${alertHtml}
     <div class="main" id="main"><p style="color:var(--muted)">Loading...</p></div>
   `;
 
@@ -287,7 +303,7 @@ function aggregateSeries(series, view) {
 async function pageAdminDashboard() {
   const view = state.chartView || 'daily';
   const daysNeeded = view === 'daily' ? 14 : view === 'weekly' ? 90 : 366;
-  const [tipsData, lowStock, cash, status, dailyRaw, disputes, shiftsToday, pinRequests, runningCosts] = await Promise.all([
+  const [tipsData, lowStock, cash, status, dailyRaw, disputes, shiftsToday, pinRequests, runningCosts, netInfo] = await Promise.all([
     API.get('/tips').catch(() => ({ tips: [] })),
     API.get('/inventory/low-stock').catch(() => ({ products: [], materials: [] })),
     API.get('/cashbook/summary').catch(() => null),
@@ -297,7 +313,9 @@ async function pageAdminDashboard() {
     API.get('/shifts/today').catch(() => []),
     API.get('/auth/pin-reset-requests').catch(() => []),
     API.get('/reports/running-costs').catch(() => null),
+    API.get('/auth/network-info').catch(() => ({ urls: [] })),
   ]);
+  window.__loginUrls = netInfo.urls || [];
   const daily = { series: aggregateSeries(dailyRaw.series, view) };
   const chartLabelFn = view === 'monthly' ? (d => d.day) : (d => shortDay(d.day));
 
@@ -310,6 +328,17 @@ async function pageAdminDashboard() {
   }
 
   return `
+  <div class="card">
+    <h3>Login link for staff phones</h3>
+    ${netInfo.urls && netInfo.urls.length ? `
+      <p style="color:var(--muted);font-size:13px;margin:0 0 8px">Share this with anyone who needs to log in from their phone - their phone must be on the same WiFi.</p>
+      ${netInfo.urls.map(u => `<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+        <input readonly value="${esc(u)}" style="flex:1;font-family:monospace" onclick="this.select()">
+        <button class="btn secondary" onclick="actions.shareLoginLink('${esc(u)}')">Share</button>
+      </div>`).join('')}
+    ` : `<p style="color:var(--muted);font-size:13px;margin:0">Could not detect a WiFi/LAN address on this computer. Make sure it's connected to the router (not just this device).</p>`}
+  </div>
+
   ${disputes.length ? `
   <div class="card" style="border:1px solid var(--danger)">
     <h3 style="color:var(--danger)">Pay disputes needing attention</h3>
@@ -319,7 +348,7 @@ async function pageAdminDashboard() {
 
   <div class="card">
     <h3>Offline tips</h3>
-    ${tipsData.tips.map(t => `<div class="tip ${t.level === 'warning' ? 'warning' : ''}">${esc(t.message)}</div>`).join('')}
+    ${tipsData.tips.filter(t => t.area !== 'orders').map(t => `<div class="tip ${t.level === 'warning' ? 'warning' : ''}">${esc(t.message)}</div>`).join('')}
   </div>
 
   <div class="stat-row">
@@ -454,7 +483,7 @@ async function pageWorkerDashboard() {
 
   <div class="card">
     <h3>Tips</h3>
-    ${tipsData.tips.map(t => `<div class="tip ${t.level === 'warning' ? 'warning' : ''}">${esc(t.message)}</div>`).join('')}
+    ${tipsData.tips.filter(t => t.area !== 'orders').map(t => `<div class="tip ${t.level === 'warning' ? 'warning' : ''}">${esc(t.message)}</div>`).join('')}
   </div>
 
   ${me ? (() => { const unit = me.pay_unit || 'unit'; const isCount = unit !== 'unit'; return `
@@ -848,7 +877,8 @@ actions.showNewMaterialForm = () => {
   document.getElementById('newMatBox').innerHTML = `<div class="card">
     <label>Name</label><input id="nm_name">
     <label>Unit (kg, roll, litre...)</label><input id="nm_unit" value="kg">
-    <label>Sold in sacks? Usual weight per sack in kg (leave blank if not - this is just a starting suggestion, each purchase/input can use a different sack size for that supplier)</label><input id="nm_sack" type="number" step="0.01" placeholder="e.g. 50">
+    <label>Packed in units? What's each one called (e.g. sack, roll, bag, drum) - leave blank if not packed in units</label><input id="nm_pack_label" placeholder="e.g. roll">
+    <label>Usual weight per unit in kg (leave blank if not - this is just a starting suggestion, each purchase/input can use a different weight for that supplier/batch)</label><input id="nm_sack" type="number" step="0.01" placeholder="e.g. 50">
     <label>Warn when stock falls below</label><input id="nm_low" type="number" step="0.01" value="0">
     <div id="nmMsg"></div>
     <button class="btn block" style="margin-top:8px" onclick="actions.newMaterial()">Save</button>
@@ -860,9 +890,10 @@ actions.newMaterial = async () => {
   const low_stock_threshold = Number(document.getElementById('nm_low').value) || 0;
   const sackVal = document.getElementById('nm_sack').value;
   const sack_weight_kg = sackVal ? Number(sackVal) : null;
+  const pack_unit_label = document.getElementById('nm_pack_label').value.trim() || null;
   if (!name) { document.getElementById('nmMsg').innerHTML = `<div class="msg error">Type a name.</div>`; return; }
   try {
-    await API.post('/inventory/materials', { name, unit, low_stock_threshold, sack_weight_kg });
+    await API.post('/inventory/materials', { name, unit, low_stock_threshold, sack_weight_kg, pack_unit_label });
     renderApp();
   } catch (e) { document.getElementById('nmMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`; }
 };
@@ -873,7 +904,8 @@ actions.editMaterial = async (id) => {
     <h3>Edit ${esc(m.name)}</h3>
     <label>Name</label><input id="em_name" value="${esc(m.name)}">
     <label>Unit</label><input id="em_unit" value="${esc(m.unit)}">
-    <label>Sold in sacks? Usual weight per sack in kg (leave blank if not - this is just a starting suggestion, each purchase/input can use a different sack size for that supplier)</label><input id="em_sack" type="number" step="0.01" value="${m.sack_weight_kg || ''}" placeholder="e.g. 50">
+    <label>Packed in units? What's each one called (e.g. sack, roll, bag, drum) - leave blank if not packed in units</label><input id="em_pack_label" value="${esc(m.pack_unit_label || '')}" placeholder="e.g. roll">
+    <label>Usual weight per unit in kg (leave blank if not - this is just a starting suggestion, each purchase/input can use a different weight for that supplier/batch)</label><input id="em_sack" type="number" step="0.01" value="${m.sack_weight_kg || ''}" placeholder="e.g. 50">
     <label>How much is in stock right now (in ${esc(m.unit)})</label><input id="em_stock" type="number" step="0.01" value="${m.stock_qty}">
     <label>Cost, per ${esc(m.unit)}</label><input id="em_cost" type="number" step="0.01" value="${m.avg_cost}">
     <label>Warn when stock falls below</label><input id="em_low" type="number" step="0.01" value="${m.low_stock_threshold}">
@@ -893,6 +925,7 @@ actions.saveMaterial = async (id) => {
     avg_cost: Number(document.getElementById('em_cost').value),
     low_stock_threshold: Number(document.getElementById('em_low').value),
     sack_weight_kg: sackVal ? Number(sackVal) : null,
+    pack_unit_label: document.getElementById('em_pack_label').value.trim() || null,
   };
   try {
     await API.put('/inventory/materials/' + id, body);
@@ -980,19 +1013,19 @@ async function pageStageInputInner() {
   const [materials, conversions, machines, elecLogs] = await Promise.all([
     API.get('/inventory/materials'), API.get('/stages/input'), API.get('/machines'), API.get('/stages/electricity'),
   ]);
-  setTimeout(() => { if (document.getElementById('in_material')) actions.onInputMaterialChange(); }, 0);
+  setTimeout(() => { if (document.getElementById('in_material')) { actions.onInputMaterialChange(); actions.onInputOutMaterialChange(); } }, 0);
   return `
   <div class="card">
     <h2>What did you feed the machine, and what came out?</h2>
     <label>Which machine</label>
     <select id="in_machine">${machines.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select>
     <label>What you put in (e.g. Plastic Beads)</label>
-    <select id="in_material" onchange="actions.onInputMaterialChange()">${materials.map(m => `<option value="${m.id}" data-sack="${m.sack_weight_kg || ''}">${esc(m.name)} (${esc(m.unit)}) - ${m.stock_qty} left${m.sack_weight_kg ? ` / ${(m.stock_qty / m.sack_weight_kg).toFixed(1)} sacks` : ''}</option>`).join('')}</select>
-    <label><input type="checkbox" id="in_use_sacks" style="width:auto;display:inline-block;vertical-align:middle" onchange="actions.toggleInputSackFields()"> Measure this in sacks</label>
+    <select id="in_material" onchange="actions.onInputMaterialChange()">${materials.map(m => `<option value="${m.id}" data-sack="${m.sack_weight_kg || ''}" data-label="${esc(packLabel(m))}">${esc(m.name)} (${esc(m.unit)}) - ${m.stock_qty} left${m.sack_weight_kg ? ` / ${(m.stock_qty / m.sack_weight_kg).toFixed(1)} ${esc(packLabel(m))}s` : ''}</option>`).join('')}</select>
+    <label><input type="checkbox" id="in_use_sacks" style="width:auto;display:inline-block;vertical-align:middle" onchange="actions.toggleInputSackFields()"> Measure this in <span id="in_sack_label">sacks</span></label>
     <div id="in_sack_field" style="display:none">
-      <label>How many sacks</label>
+      <label>How many <span id="in_sack_label2">sacks</span></label>
       <input id="in_sacks" type="number" step="1">
-      <label>Weight per sack (kg) - this supplier's sack size</label>
+      <label>Weight per <span id="in_sack_label3">sack</span> (kg) - this supplier's size</label>
       <input id="in_sack_weight" type="number" step="0.01" placeholder="e.g. 50">
     </div>
     <div id="in_qty_field">
@@ -1000,9 +1033,18 @@ async function pageStageInputInner() {
       <input id="in_qty" type="number" step="0.01">
     </div>
     <label>What came out (e.g. Plastic Roll)</label>
-    <select id="in_out_material">${materials.map(m => `<option value="${m.id}">${esc(m.name)} (${esc(m.unit)})</option>`).join('')}</select>
-    <label>How much came out</label>
-    <input id="in_out_qty" type="number" step="0.01">
+    <select id="in_out_material" onchange="actions.onInputOutMaterialChange()">${materials.map(m => `<option value="${m.id}" data-sack="${m.sack_weight_kg || ''}" data-label="${esc(packLabel(m))}">${esc(m.name)} (${esc(m.unit)})</option>`).join('')}</select>
+    <label><input type="checkbox" id="in_out_use_sacks" style="width:auto;display:inline-block;vertical-align:middle" onchange="actions.toggleInputOutSackFields()"> Measure this in <span id="in_out_sack_label">sacks</span></label>
+    <div id="in_out_sack_field" style="display:none">
+      <label>How many <span id="in_out_sack_label2">sacks</span> came out</label>
+      <input id="in_out_sacks" type="number" step="1">
+      <label>Weight per <span id="in_out_sack_label3">sack</span> (kg)</label>
+      <input id="in_out_sack_weight" type="number" step="0.01" placeholder="e.g. 25">
+    </div>
+    <div id="in_out_qty_field">
+      <label>How much came out (kg)</label>
+      <input id="in_out_qty" type="number" step="0.01">
+    </div>
     <label>Where the material came from (optional)</label>
     <input id="in_source" placeholder="e.g. ABC Polymers">
     <label>Notes</label>
@@ -1040,14 +1082,34 @@ async function pageStageInputInner() {
 actions.onInputMaterialChange = () => {
   const opt = document.getElementById('in_material').selectedOptions[0];
   const defaultSack = opt ? Number(opt.dataset.sack) : 0;
+  const label = opt ? opt.dataset.label : 'sack';
   document.getElementById('in_sack_weight').value = defaultSack || '';
   document.getElementById('in_use_sacks').checked = !!defaultSack;
+  document.getElementById('in_sack_label').textContent = label + 's';
+  document.getElementById('in_sack_label2').textContent = label + 's';
+  document.getElementById('in_sack_label3').textContent = label;
   actions.toggleInputSackFields();
 };
 actions.toggleInputSackFields = () => {
   const useSacks = document.getElementById('in_use_sacks').checked;
   document.getElementById('in_sack_field').style.display = useSacks ? '' : 'none';
   document.getElementById('in_qty_field').style.display = useSacks ? 'none' : '';
+};
+actions.onInputOutMaterialChange = () => {
+  const opt = document.getElementById('in_out_material').selectedOptions[0];
+  const defaultSack = opt ? Number(opt.dataset.sack) : 0;
+  const label = opt ? opt.dataset.label : 'sack';
+  document.getElementById('in_out_sack_weight').value = defaultSack || '';
+  document.getElementById('in_out_use_sacks').checked = !!defaultSack;
+  document.getElementById('in_out_sack_label').textContent = label + 's';
+  document.getElementById('in_out_sack_label2').textContent = label + 's';
+  document.getElementById('in_out_sack_label3').textContent = label;
+  actions.toggleInputOutSackFields();
+};
+actions.toggleInputOutSackFields = () => {
+  const useSacks = document.getElementById('in_out_use_sacks').checked;
+  document.getElementById('in_out_sack_field').style.display = useSacks ? '' : 'none';
+  document.getElementById('in_out_qty_field').style.display = useSacks ? 'none' : '';
 };
 actions.logInput = async () => {
   const inputMat = document.getElementById('in_material').value;
@@ -1061,17 +1123,27 @@ actions.logInput = async () => {
   if (useSacks) {
     const sacks = Number(document.getElementById('in_sacks').value) || 0;
     const sackWeight = Number(document.getElementById('in_sack_weight').value) || 0;
-    if (!sacks || !sackWeight) { document.getElementById('inMsg').innerHTML = `<div class="msg error">Type how many sacks and the weight per sack.</div>`; return; }
+    if (!sacks || !sackWeight) { document.getElementById('inMsg').innerHTML = `<div class="msg error">Type how many ${document.getElementById('in_sack_label2').textContent} and the weight per one.</div>`; return; }
     inputQty = sacks * sackWeight;
   } else {
     inputQty = document.getElementById('in_qty').value;
+  }
+  const useOutSacks = document.getElementById('in_out_use_sacks').checked;
+  let outputQty;
+  if (useOutSacks) {
+    const sacks = Number(document.getElementById('in_out_sacks').value) || 0;
+    const sackWeight = Number(document.getElementById('in_out_sack_weight').value) || 0;
+    if (!sacks || !sackWeight) { document.getElementById('inMsg').innerHTML = `<div class="msg error">Type how many ${document.getElementById('in_out_sack_label2').textContent} came out and the weight per one.</div>`; return; }
+    outputQty = sacks * sackWeight;
+  } else {
+    outputQty = document.getElementById('in_out_qty').value;
   }
   const form = new FormData();
   form.append('machine_id', document.getElementById('in_machine').value);
   form.append('input_material_id', inputMat);
   form.append('input_qty', inputQty);
   form.append('output_material_id', outputMat);
-  form.append('output_qty', document.getElementById('in_out_qty').value);
+  form.append('output_qty', outputQty);
   form.append('source_company', document.getElementById('in_source').value);
   form.append('notes', document.getElementById('in_notes').value);
   const photoInput = document.getElementById('in_photo');
@@ -1252,17 +1324,17 @@ async function pagePurchases() {
   <div class="card">
     <h2>Record a purchase (raw material intake)</h2>
     <label>Material</label>
-    <select id="pu_material" onchange="actions.onPurchaseMaterialChange()">${materials.map(m => `<option value="${m.id}" data-sack="${m.sack_weight_kg || ''}" data-unit="${esc(m.unit)}">${esc(m.name)} (${esc(m.unit)})</option>`).join('')}</select>
+    <select id="pu_material" onchange="actions.onPurchaseMaterialChange()">${materials.map(m => `<option value="${m.id}" data-sack="${m.sack_weight_kg || ''}" data-label="${esc(packLabel(m))}" data-unit="${esc(m.unit)}">${esc(m.name)} (${esc(m.unit)})</option>`).join('')}</select>
     <label>Supplier</label>
     <select id="pu_supplier"><option value="">(none)</option>${suppliers.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select>
 
-    <label><input type="checkbox" id="pu_use_sacks" style="width:auto;display:inline-block;vertical-align:middle" onchange="actions.togglePurchaseSackFields()"> Measure this purchase in sacks</label>
+    <label><input type="checkbox" id="pu_use_sacks" style="width:auto;display:inline-block;vertical-align:middle" onchange="actions.togglePurchaseSackFields()"> Measure this purchase in <span id="pu_sack_label">sacks</span></label>
     <div id="pu_sack_fields" style="display:none">
-      <label>Number of sacks</label>
+      <label>Number of <span id="pu_sack_label2">sacks</span></label>
       <input id="pu_sacks" type="number" step="1">
-      <label>Weight per sack (kg) - this supplier's sack size</label>
+      <label>Weight per <span id="pu_sack_label3">sack</span> (kg) - this supplier's size</label>
       <input id="pu_sack_weight" type="number" step="0.01" placeholder="e.g. 50">
-      <label>Cost per sack</label>
+      <label>Cost per <span id="pu_sack_label4">sack</span></label>
       <input id="pu_sack_cost" type="number" step="0.01">
       <p style="color:var(--muted);font-size:12px">This works out the kg and cost per kg for you.</p>
     </div>
@@ -1297,8 +1369,13 @@ actions.newSupplier = async () => {
 actions.onPurchaseMaterialChange = () => {
   const opt = document.getElementById('pu_material').selectedOptions[0];
   const defaultSack = opt ? Number(opt.dataset.sack) : 0;
+  const label = opt ? opt.dataset.label : 'sack';
   document.getElementById('pu_sack_weight').value = defaultSack || '';
   document.getElementById('pu_use_sacks').checked = !!defaultSack;
+  document.getElementById('pu_sack_label').textContent = label + 's';
+  document.getElementById('pu_sack_label2').textContent = label + 's';
+  document.getElementById('pu_sack_label3').textContent = label;
+  document.getElementById('pu_sack_label4').textContent = label;
   actions.togglePurchaseSackFields();
 };
 actions.togglePurchaseSackFields = () => {
@@ -1315,7 +1392,7 @@ actions.logPurchase = async () => {
     const sacks = Number(document.getElementById('pu_sacks').value) || 0;
     const sackWeight = Number(document.getElementById('pu_sack_weight').value) || 0;
     const sackCost = Number(document.getElementById('pu_sack_cost').value) || 0;
-    if (!sacks || !sackWeight) { document.getElementById('puMsg').innerHTML = `<div class="msg error">Type how many sacks and the weight per sack.</div>`; return; }
+    if (!sacks || !sackWeight) { document.getElementById('puMsg').innerHTML = `<div class="msg error">Type how many ${document.getElementById('pu_sack_label2').textContent} and the weight per one.</div>`; return; }
     qty = sacks * sackWeight;
     unit_cost = sackCost / sackWeight;
   } else {
@@ -1649,7 +1726,8 @@ actions.newUser = async () => {
   }
 };
 function newStaffPinCard(u) {
-  window.__lastNewStaffShareText = `${esc(state.settings.business_name || '')}\nYour PlastPOS login\nName: ${u.name}\nPIN: ${u.pin}\nAsk the admin how to reach the app on the WiFi.`;
+  const loginUrl = (window.__loginUrls && window.__loginUrls[0]) || null;
+  window.__lastNewStaffShareText = `${esc(state.settings.business_name || '')}\nYour PlastPOS login\nName: ${u.name}\nPIN: ${u.pin}\n${loginUrl ? `Open this on your phone (same WiFi): ${loginUrl}` : 'Ask the admin how to reach the app on the WiFi.'}`;
   return `<div class="msg ok">
     <b>${esc(u.name)}</b> was added. Their PIN is <b style="font-size:16px">${esc(u.pin || '(kept the one you typed)')}</b>.
     ${u.pin ? `
@@ -1659,6 +1737,14 @@ function newStaffPinCard(u) {
     </div>` : `<div style="margin-top:8px"><button class="btn" onclick="renderApp()">Done</button></div>`}
   </div>`;
 }
+actions.shareLoginLink = async (url) => {
+  const text = `${state.settings.business_name || 'PlastPOS'} login link: ${url}`;
+  if (navigator.share) {
+    try { await navigator.share({ title: 'PlastPOS login link', text }); return; } catch (e) { return; }
+  }
+  try { await navigator.clipboard.writeText(text); alert('Copied. Paste it into WhatsApp.'); }
+  catch (e) { alert(text); }
+};
 actions.shareNewStaffPin = async () => {
   const text = window.__lastNewStaffShareText || '';
   if (navigator.share) {

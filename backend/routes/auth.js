@@ -1,4 +1,5 @@
 const express = require('express');
+const os = require('os');
 const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { createSession, destroySession, requireAuth } = require('../middleware/auth');
@@ -61,6 +62,21 @@ router.put('/settings', requireAuth('admin'), (req, res) => {
     if (req.body[key] !== undefined) setSetting.run(key, String(req.body[key]));
   }
   res.json({ ok: true });
+});
+
+// GET /api/auth/network-info - admin-only: this computer's LAN address, so
+// admin has the exact link to share with staff phones (same WiFi router).
+router.get('/network-info', requireAuth('admin'), (req, res) => {
+  const port = req.socket.localPort;
+  const addresses = [];
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) addresses.push(iface.address);
+    }
+  }
+  const urls = addresses.map(ip => `http://${ip}:${port}`);
+  res.json({ urls, port });
 });
 
 // POST /api/auth/login

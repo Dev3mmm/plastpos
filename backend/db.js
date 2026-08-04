@@ -72,10 +72,12 @@ CREATE TABLE IF NOT EXISTS products (
 );
 
 -- Stock is always tracked in kg internally (that's what a machine actually
--- consumes), but a material can optionally be sold in sacks of a fixed
--- weight - sack_weight_kg lets the Purchases screen accept "N sacks at
--- cost each" and convert to kg/cost-per-kg automatically, matching how
--- it's actually bought, without a second stock ledger to keep in sync.
+-- consumes), but a material can optionally be sold/produced in packed units
+-- (sack, roll, bag, drum...) of a usual weight - sack_weight_kg is that
+-- usual weight per unit, pack_unit_label is what the unit is called (blank
+-- defaults to "sack" in the UI). Both are just a default suggestion the
+-- Purchases/Input screens prefill - each individual entry can override the
+-- weight per unit, since different suppliers/batches pack differently.
 CREATE TABLE IF NOT EXISTS raw_materials (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -84,6 +86,7 @@ CREATE TABLE IF NOT EXISTS raw_materials (
   low_stock_threshold REAL NOT NULL DEFAULT 0,
   avg_cost REAL NOT NULL DEFAULT 0,
   sack_weight_kg REAL,
+  pack_unit_label TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -352,6 +355,7 @@ tryAddColumn('dispatches', 'paid INTEGER NOT NULL DEFAULT 0');
 tryAddColumn('material_conversions', 'machine_id INTEGER REFERENCES machines(id)');
 tryAddColumn('dispatches', 'order_id INTEGER REFERENCES orders(id)');
 tryAddColumn('raw_materials', 'sack_weight_kg REAL');
+tryAddColumn('raw_materials', 'pack_unit_label TEXT');
 tryAddColumn('users', "pay_type TEXT NOT NULL DEFAULT 'piece'");
 tryAddColumn('customers', 'location TEXT');
 

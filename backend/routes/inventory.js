@@ -57,10 +57,10 @@ router.get('/materials', (req, res) => {
 });
 
 router.post('/materials', requireAuth('admin'), (req, res) => {
-  const { name, unit, low_stock_threshold, sack_weight_kg } = req.body;
+  const { name, unit, low_stock_threshold, sack_weight_kg, pack_unit_label } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
-  const info = db.prepare('INSERT INTO raw_materials (name, unit, low_stock_threshold, sack_weight_kg) VALUES (?, ?, ?, ?)')
-    .run(name, unit || 'kg', low_stock_threshold || 0, sack_weight_kg || null);
+  const info = db.prepare('INSERT INTO raw_materials (name, unit, low_stock_threshold, sack_weight_kg, pack_unit_label) VALUES (?, ?, ?, ?, ?)')
+    .run(name, unit || 'kg', low_stock_threshold || 0, sack_weight_kg || null, pack_unit_label || null);
   res.json(db.prepare('SELECT * FROM raw_materials WHERE id = ?').get(info.lastInsertRowid));
 });
 
@@ -72,10 +72,11 @@ router.put('/materials/:id', requireAuth('admin'), (req, res) => {
   const m = db.prepare('SELECT * FROM raw_materials WHERE id = ?').get(req.params.id);
   if (!m) return res.status(404).json({ error: 'Not found' });
   const sack_weight_kg = req.body.sack_weight_kg !== undefined ? (req.body.sack_weight_kg || null) : m.sack_weight_kg;
-  db.prepare('UPDATE raw_materials SET name=?, unit=?, low_stock_threshold=?, stock_qty=?, avg_cost=?, sack_weight_kg=? WHERE id=?')
+  const pack_unit_label = req.body.pack_unit_label !== undefined ? (req.body.pack_unit_label || null) : m.pack_unit_label;
+  db.prepare('UPDATE raw_materials SET name=?, unit=?, low_stock_threshold=?, stock_qty=?, avg_cost=?, sack_weight_kg=?, pack_unit_label=? WHERE id=?')
     .run(name ?? m.name, unit ?? m.unit, low_stock_threshold ?? m.low_stock_threshold,
       stock_qty != null ? Number(stock_qty) : m.stock_qty,
-      avg_cost != null ? Number(avg_cost) : m.avg_cost, sack_weight_kg, req.params.id);
+      avg_cost != null ? Number(avg_cost) : m.avg_cost, sack_weight_kg, pack_unit_label, req.params.id);
   if (stock_qty != null && Number(stock_qty) !== m.stock_qty) {
     logMovement('material', req.params.id, Number(stock_qty) - m.stock_qty, 'manual correction');
   }

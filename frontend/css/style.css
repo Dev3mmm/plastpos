@@ -56,6 +56,8 @@ body {
 
 .main { flex: 1; padding: 12px; max-width: 900px; width: 100%; margin: 0 auto; }
 
+.overhead-alert { max-width: 900px; width: 100%; margin: 10px auto 0; padding: 0 12px; }
+
 .card {
   background: var(--card);
   border: 1px solid var(--border);
