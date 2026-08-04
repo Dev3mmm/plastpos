@@ -39,7 +39,13 @@ See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full setup instructions (works 
 
 ## Quick start
 
-**Windows:** double-click `install.bat` once (checks/installs Node.js, installs dependencies, adds a `PlastPOS` desktop shortcut and prints this computer's WiFi address for phones). After that, double-click the desktop shortcut (or `start-plastpos.bat`) any time to run it.
+**Windows, this machine already has the code:** double-click `install.bat` once (checks/installs Node.js, installs dependencies, adds a `PlastPOS` desktop shortcut and prints this computer's WiFi address for phones). After that, double-click the desktop shortcut (or `start-plastpos.bat`) any time to run it.
+
+**Carrying it to a different Windows machine on a flash drive (no internet needed there at all):**
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging\build-portable.ps1
+```
+Builds a self-contained `dist/PlastPOS-USB/` folder with a bundled Node.js runtime and all dependencies already installed — nothing needs to be downloaded or installed on the target machine. Copy that folder onto a flash drive, plug it into any Windows PC, and run `Install-To-This-PC.bat`. See `packaging/templates/README-INSTALL.txt` (included on the drive) for the plain-English version. Each machine gets its own independent copy and data.
 
 **Any platform (manual):**
 ```bash
