@@ -316,7 +316,7 @@ async function pageAdminDashboard() {
   </div>
 
   <div class="stat-row">
-    <div class="stat"><div class="value">${money(cash ? cash.cash_in_hand : 0)}</div><div class="label">Cash in hand</div></div>
+    <div class="stat ${cash && cash.cash_in_hand < 0 ? 'flash-red' : cash && cash.cash_in_hand > 0 ? 'flash-green' : ''}"><div class="value">${money(cash ? cash.cash_in_hand : 0)}</div><div class="label">Cash in hand</div></div>
     <div class="stat"><div class="value">${money(cash ? cash.today_in : 0)}</div><div class="label">Today in</div></div>
     <div class="stat"><div class="value">${money(cash ? cash.today_out : 0)}</div><div class="label">Today out</div></div>
   </div>
@@ -437,7 +437,7 @@ async function pageWorkerDashboard() {
   <div class="stat-row">
     <div class="stat"><div class="value">${me.today_qty}</div><div class="label">Done today</div></div>
     <div class="stat"><div class="value">${me.week_qty}</div><div class="label">Done this week</div></div>
-    <div class="stat"><div class="value">${money(me.unpaid_amount)}</div><div class="label">Owed to you</div></div>
+    <div class="stat ${me.unpaid_amount > 0 ? 'flash-green' : ''}"><div class="value">${money(me.unpaid_amount)}</div><div class="label">Owed to you</div></div>
   </div>
 
   <div class="card">

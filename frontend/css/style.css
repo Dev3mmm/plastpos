@@ -132,7 +132,21 @@ th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: upp
 .cart-row .qty-ctl button { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: #fff; }
 
 .tip { padding: 10px; border-radius: 8px; margin-bottom: 8px; font-size: 13px; border-left: 4px solid var(--teal); background: #f0fdfa; }
-.tip.warning { border-color: var(--warn); background: #fffbeb; }
+.tip.warning { border-color: var(--danger); }
+
+/* Gentle pulse (not a hard strobe, for safety) - red for problems that
+   need attention, green for good news like a profit. */
+@keyframes flash-red {
+  0%, 100% { background: #fef2f2; border-left-color: var(--danger); }
+  50% { background: #fecaca; border-left-color: #991b1b; }
+}
+@keyframes flash-green {
+  0%, 100% { background: #f0fdf4; border-left-color: var(--ok); }
+  50% { background: #bbf7d0; border-left-color: #15803d; }
+}
+.flash-red { animation: flash-red 1.4s ease-in-out infinite; }
+.flash-green { animation: flash-green 1.4s ease-in-out infinite; }
+.tip.warning { animation: flash-red 1.4s ease-in-out infinite; }
 
 .receipt { font-family: 'Courier New', monospace; background: #fff; border: 1px dashed #999; padding: 16px; max-width: 320px; margin: 0 auto; font-size: 13px; }
 .receipt .line { border-top: 1px dashed #999; margin: 8px 0; }
