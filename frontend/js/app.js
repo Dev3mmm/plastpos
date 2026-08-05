@@ -877,54 +877,129 @@ actions.showNewMaterialForm = () => {
   document.getElementById('newMatBox').innerHTML = `<div class="card">
     <label>Name</label><input id="nm_name">
     <label>Unit (kg, roll, litre...)</label><input id="nm_unit" value="kg">
-    <label>Packed in units? What's each one called (e.g. sack, roll, bag, drum) - leave blank if not packed in units</label><input id="nm_pack_label" placeholder="e.g. roll">
-    <label>Usual weight per unit in kg (leave blank if not - this is just a starting suggestion, each purchase/input can use a different weight for that supplier/batch)</label><input id="nm_sack" type="number" step="0.01" placeholder="e.g. 50">
-    <label>Warn when stock falls below</label><input id="nm_low" type="number" step="0.01" value="0">
+    <label>Packed in units? What's each one called (e.g. sack, roll, bag, drum) - leave blank if not packed in units</label><input id="nm_pack_label" oninput="actions.onNewMatSackChange()" placeholder="e.g. sack">
+    <label>Usual weight per unit in kg (leave blank if not - this is just a starting suggestion, each purchase/input can use a different weight for that supplier/batch)</label><input id="nm_sack" type="number" step="0.01" oninput="actions.onNewMatSackChange()" placeholder="e.g. 50">
+    <div id="nm_low_wrap"><label>Warn when stock falls below</label><input id="nm_low" type="number" step="0.01" value="0"></div>
     <div id="nmMsg"></div>
     <button class="btn block" style="margin-top:8px" onclick="actions.newMaterial()">Save</button>
   </div>`;
 };
+actions.onNewMatSackChange = () => {
+  const weight = Number(document.getElementById('nm_sack').value) || 0;
+  const label = document.getElementById('nm_pack_label').value.trim() || 'sack';
+  document.getElementById('nm_low_wrap').innerHTML = weight
+    ? `<label>Warn when stock falls below (in ${esc(label)}s)</label><input id="nm_low" type="number" step="0.01" value="0">`
+    : `<label>Warn when stock falls below</label><input id="nm_low" type="number" step="0.01" value="0">`;
+};
 actions.newMaterial = async () => {
   const name = document.getElementById('nm_name').value.trim();
   const unit = document.getElementById('nm_unit').value.trim() || 'kg';
-  const low_stock_threshold = Number(document.getElementById('nm_low').value) || 0;
   const sackVal = document.getElementById('nm_sack').value;
-  const sack_weight_kg = sackVal ? Number(sackVal) : null;
+  const weight = sackVal ? Number(sackVal) : 0;
+  const lowInput = Number(document.getElementById('nm_low').value) || 0;
+  const low_stock_threshold = weight ? lowInput * weight : lowInput;
   const pack_unit_label = document.getElementById('nm_pack_label').value.trim() || null;
   if (!name) { document.getElementById('nmMsg').innerHTML = `<div class="msg error">Type a name.</div>`; return; }
   try {
-    await API.post('/inventory/materials', { name, unit, low_stock_threshold, sack_weight_kg, pack_unit_label });
+    await API.post('/inventory/materials', { name, unit, low_stock_threshold, sack_weight_kg: weight || null, pack_unit_label });
     renderApp();
   } catch (e) { document.getElementById('nmMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`; }
 };
 actions.editMaterial = async (id) => {
   const m = (await API.get('/inventory/materials')).find(x => x.id === id);
   if (!m) return;
+  window.__editMaterial = m;
   document.getElementById('matEditBox').innerHTML = `<div class="card">
     <h3>Edit ${esc(m.name)}</h3>
     <label>Name</label><input id="em_name" value="${esc(m.name)}">
     <label>Unit</label><input id="em_unit" value="${esc(m.unit)}">
-    <label>Packed in units? What's each one called (e.g. sack, roll, bag, drum) - leave blank if not packed in units</label><input id="em_pack_label" value="${esc(m.pack_unit_label || '')}" placeholder="e.g. roll">
-    <label>Usual weight per unit in kg (leave blank if not - this is just a starting suggestion, each purchase/input can use a different weight for that supplier/batch)</label><input id="em_sack" type="number" step="0.01" value="${m.sack_weight_kg || ''}" placeholder="e.g. 50">
-    <label>How much is in stock right now (in ${esc(m.unit)})</label><input id="em_stock" type="number" step="0.01" value="${m.stock_qty}">
-    <label>Cost, per ${esc(m.unit)}</label><input id="em_cost" type="number" step="0.01" value="${m.avg_cost}">
-    <label>Warn when stock falls below</label><input id="em_low" type="number" step="0.01" value="${m.low_stock_threshold}">
+    <label>Packed in units? What's each one called (e.g. sack, roll, bag, drum) - leave blank if not packed in units</label><input id="em_pack_label" value="${esc(m.pack_unit_label || '')}" oninput="actions.onEditSackChange()" placeholder="e.g. sack">
+    <label>Usual weight per unit in kg (leave blank if not)</label><input id="em_sack" type="number" step="0.01" value="${m.sack_weight_kg || ''}" oninput="actions.onEditSackChange()" placeholder="e.g. 50">
+    <div id="em_stock_wrap"></div>
+    <div id="em_cost_wrap"></div>
+    <div id="em_low_wrap"></div>
     <div id="emMsg"></div>
     <div class="grid cols-2" style="margin-top:8px">
       <button class="btn" onclick="actions.saveMaterial(${id})">Save</button>
       <button class="btn secondary" onclick="document.getElementById('matEditBox').innerHTML=''">Cancel</button>
     </div>
   </div>`;
+  actions.onEditSackChange();
+};
+// Once a material is packed in units (sack/roll/whatever), the admin thinks
+// in units, not kg - so stock, the low-stock warning, and cost all switch to
+// unit-based entry here too (not just Purchases/Input), converting to/from
+// the kg the system tracks internally under the hood.
+actions.onEditSackChange = () => {
+  const m = window.__editMaterial;
+  const label = document.getElementById('em_pack_label').value.trim() || 'sack';
+  const weight = Number(document.getElementById('em_sack').value) || 0;
+
+  if (weight) {
+    const stockUnits = m.stock_qty / weight;
+    const lowUnits = m.low_stock_threshold / weight;
+    const costPerUnit = m.avg_cost * weight;
+    document.getElementById('em_stock_wrap').innerHTML = `
+      <label>How many ${esc(label)}s in stock right now</label>
+      <input id="em_stock" type="number" step="0.01" value="${stockUnits.toFixed(2)}" oninput="actions.updateEditKgHint()">
+      <p id="em_stock_hint" style="color:var(--muted);font-size:12px;margin:2px 0 0">= ${m.stock_qty}kg</p>`;
+    document.getElementById('em_cost_wrap').innerHTML = `
+      <label>Cost per</label>
+      <div style="display:flex;gap:14px;align-items:center;margin:4px 0 6px">
+        <label style="width:auto;font-weight:normal;display:flex;gap:4px;align-items:center"><input type="radio" name="em_cost_unit" value="unit" checked style="width:auto" onchange="actions.onEditCostUnitChange()"> ${esc(label)}</label>
+        <label style="width:auto;font-weight:normal;display:flex;gap:4px;align-items:center"><input type="radio" name="em_cost_unit" value="kg" style="width:auto" onchange="actions.onEditCostUnitChange()"> kg</label>
+      </div>
+      <input id="em_cost" type="number" step="0.01" value="${costPerUnit.toFixed(2)}">`;
+    document.getElementById('em_low_wrap').innerHTML = `
+      <label>Warn when stock falls below (in ${esc(label)}s)</label>
+      <input id="em_low" type="number" step="0.01" value="${lowUnits.toFixed(2)}">`;
+  } else {
+    document.getElementById('em_stock_wrap').innerHTML = `
+      <label>How much is in stock right now (in ${esc(m.unit)})</label>
+      <input id="em_stock" type="number" step="0.01" value="${m.stock_qty}">`;
+    document.getElementById('em_cost_wrap').innerHTML = `
+      <label>Cost, per ${esc(m.unit)}</label><input id="em_cost" type="number" step="0.01" value="${m.avg_cost}">`;
+    document.getElementById('em_low_wrap').innerHTML = `
+      <label>Warn when stock falls below</label><input id="em_low" type="number" step="0.01" value="${m.low_stock_threshold}">`;
+  }
+};
+actions.updateEditKgHint = () => {
+  const weight = Number(document.getElementById('em_sack').value) || 0;
+  const units = Number(document.getElementById('em_stock').value) || 0;
+  const hint = document.getElementById('em_stock_hint');
+  if (hint) hint.textContent = `= ${(units * weight).toFixed(1)}kg`;
+};
+actions.onEditCostUnitChange = () => {
+  const m = window.__editMaterial;
+  const weight = Number(document.getElementById('em_sack').value) || 0;
+  const unit = document.querySelector('input[name="em_cost_unit"]:checked').value;
+  document.getElementById('em_cost').value = unit === 'unit' ? (m.avg_cost * weight).toFixed(2) : m.avg_cost;
 };
 actions.saveMaterial = async (id) => {
+  const m = window.__editMaterial;
   const sackVal = document.getElementById('em_sack').value;
+  const weight = sackVal ? Number(sackVal) : 0;
+  const stockInput = Number(document.getElementById('em_stock').value) || 0;
+  const lowInput = Number(document.getElementById('em_low').value) || 0;
+  const costInput = Number(document.getElementById('em_cost').value) || 0;
+
+  let stock_qty, low_stock_threshold, avg_cost;
+  if (weight) {
+    stock_qty = stockInput * weight;
+    low_stock_threshold = lowInput * weight;
+    const costRadio = document.querySelector('input[name="em_cost_unit"]:checked');
+    avg_cost = (costRadio && costRadio.value === 'kg') ? costInput : costInput / weight;
+  } else {
+    stock_qty = stockInput;
+    low_stock_threshold = lowInput;
+    avg_cost = costInput;
+  }
+
   const body = {
     name: document.getElementById('em_name').value,
     unit: document.getElementById('em_unit').value,
-    stock_qty: Number(document.getElementById('em_stock').value),
-    avg_cost: Number(document.getElementById('em_cost').value),
-    low_stock_threshold: Number(document.getElementById('em_low').value),
-    sack_weight_kg: sackVal ? Number(sackVal) : null,
+    stock_qty, avg_cost, low_stock_threshold,
+    sack_weight_kg: weight || null,
     pack_unit_label: document.getElementById('em_pack_label').value.trim() || null,
   };
   try {
