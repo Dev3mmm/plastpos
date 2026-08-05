@@ -13,7 +13,7 @@ const router = express.Router();
 router.get('/', requireAuth('admin', 'cutting'), (req, res) => {
   const { from, to } = req.query;
   let sql = `SELECT production_batches.*, products.name as product_name, products.size,
-    users.name as operator_name
+    products.pack_qty, products.pack_unit_label, users.name as operator_name
     FROM production_batches
     JOIN products ON products.id = production_batches.product_id
     LEFT JOIN users ON users.id = production_batches.operator_id

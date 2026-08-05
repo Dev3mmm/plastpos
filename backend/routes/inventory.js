@@ -16,10 +16,11 @@ router.get('/products', (req, res) => {
 });
 
 router.post('/products', requireAuth('admin'), (req, res) => {
-  const { name, size, unit_price, unit_cost, low_stock_threshold } = req.body;
+  const { name, size, unit_price, unit_cost, low_stock_threshold, pack_qty, pack_unit_label } = req.body;
   if (!name || unit_price == null) return res.status(400).json({ error: 'name and unit_price are required' });
-  const info = db.prepare(`INSERT INTO products (name, size, unit_price, unit_cost, low_stock_threshold)
-    VALUES (?, ?, ?, ?, ?)`).run(name, size || '', unit_price, unit_cost || 0, low_stock_threshold || 0);
+  const info = db.prepare(`INSERT INTO products (name, size, unit_price, unit_cost, low_stock_threshold, pack_qty, pack_unit_label)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`).run(name, size || '', unit_price, unit_cost || 0, low_stock_threshold || 0,
+      pack_qty || null, pack_unit_label || null);
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(info.lastInsertRowid));
 });
 
@@ -29,11 +30,13 @@ router.put('/products/:id', requireAuth('admin'), (req, res) => {
   const { name, size, unit_price, unit_cost, low_stock_threshold, active, stock_qty } = req.body;
   const p = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   if (!p) return res.status(404).json({ error: 'Not found' });
-  db.prepare(`UPDATE products SET name=?, size=?, unit_price=?, unit_cost=?, low_stock_threshold=?, active=?, stock_qty=?
+  const pack_qty = req.body.pack_qty !== undefined ? (req.body.pack_qty || null) : p.pack_qty;
+  const pack_unit_label = req.body.pack_unit_label !== undefined ? (req.body.pack_unit_label || null) : p.pack_unit_label;
+  db.prepare(`UPDATE products SET name=?, size=?, unit_price=?, unit_cost=?, low_stock_threshold=?, active=?, stock_qty=?, pack_qty=?, pack_unit_label=?
     WHERE id=?`).run(
     name ?? p.name, size ?? p.size, unit_price ?? p.unit_price, unit_cost ?? p.unit_cost,
     low_stock_threshold ?? p.low_stock_threshold, active ?? p.active,
-    stock_qty != null ? Number(stock_qty) : p.stock_qty, req.params.id
+    stock_qty != null ? Number(stock_qty) : p.stock_qty, pack_qty, pack_unit_label, req.params.id
   );
   if (stock_qty != null && Number(stock_qty) !== p.stock_qty) {
     logMovement('product', req.params.id, Number(stock_qty) - p.stock_qty, 'manual correction');

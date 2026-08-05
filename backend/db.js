@@ -59,6 +59,12 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
+-- Stock is always tracked in individual pieces internally (that's the sale/
+-- delivery unit), but Packaging counts what they cut in packets (e.g. 100
+-- pieces per packet) - pack_qty is the usual pieces-per-packet, pack_unit_label
+-- is what the packet is called. Same "default suggestion, overridable per
+-- entry" pattern as raw_materials' sack fields, so a differently-sized batch
+-- doesn't force a schema/config change.
 CREATE TABLE IF NOT EXISTS products (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
@@ -67,6 +73,8 @@ CREATE TABLE IF NOT EXISTS products (
   unit_cost REAL NOT NULL DEFAULT 0,
   stock_qty REAL NOT NULL DEFAULT 0,
   low_stock_threshold REAL NOT NULL DEFAULT 0,
+  pack_qty REAL,
+  pack_unit_label TEXT,
   active INTEGER DEFAULT 1,
   created_at TEXT DEFAULT (datetime('now'))
 );
@@ -356,6 +364,8 @@ tryAddColumn('material_conversions', 'machine_id INTEGER REFERENCES machines(id)
 tryAddColumn('dispatches', 'order_id INTEGER REFERENCES orders(id)');
 tryAddColumn('raw_materials', 'sack_weight_kg REAL');
 tryAddColumn('raw_materials', 'pack_unit_label TEXT');
+tryAddColumn('products', 'pack_qty REAL');
+tryAddColumn('products', 'pack_unit_label TEXT');
 tryAddColumn('users', "pay_type TEXT NOT NULL DEFAULT 'piece'");
 tryAddColumn('customers', 'location TEXT');
 

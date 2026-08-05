@@ -12,6 +12,31 @@ function dt(s) { if (!s) return ''; return String(s).replace('T', ' ').slice(0, 
 function packLabel(m) { return (m && m.pack_unit_label) ? m.pack_unit_label : 'sack'; }
 function shortDay(s) { return String(s).slice(5); } // "2026-08-04" -> "08-04"
 
+// Tips are recomputed fresh from live data on every fetch (nothing stored
+// server-side), so "dismiss" just means "hide this exact message for me
+// until it changes" - a stable key per browser+login, kept in localStorage.
+// If the same situation comes back with the same message, it reappears;
+// dismissing is not the same as fixing the underlying thing.
+function tipKeyOf(t) {
+  const s = t.area + '::' + t.message;
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return String(h);
+}
+function dismissedTipsStorageKey() { return 'plastpos_dismissed_tips_' + (API.user ? API.user.id : 'anon'); }
+function getDismissedTipKeys() {
+  try { return new Set(JSON.parse(localStorage.getItem(dismissedTipsStorageKey()) || '[]')); }
+  catch (e) { return new Set(); }
+}
+function renderTips(tips) {
+  const dismissed = getDismissedTipKeys();
+  return tips.filter(t => t.area !== 'orders' && !dismissed.has(tipKeyOf(t))).map(t => `
+    <div class="tip ${t.level === 'warning' ? 'warning' : ''}">
+      <span>${esc(t.message)}</span>
+      <button class="tip-dismiss" title="Dismiss" onclick="actions.dismissTip('${tipKeyOf(t)}', this)">&times;</button>
+    </div>`).join('');
+}
+
 // Hand-rolled inline SVG line chart - no charting library, so the app stays
 // fully self-contained and works offline with zero dependencies. `series`
 // is an array of objects; `key` is the numeric field to plot.
@@ -92,6 +117,13 @@ function renderSetup() {
 }
 
 const actions = {};
+actions.dismissTip = (key, btn) => {
+  const set = getDismissedTipKeys();
+  set.add(key);
+  localStorage.setItem(dismissedTipsStorageKey(), JSON.stringify([...set]));
+  const el = btn.closest('.tip');
+  if (el) el.remove();
+};
 actions.submitSetup = async () => {
   const body = {
     businessName: document.getElementById('s_name').value.trim(),
@@ -348,7 +380,7 @@ async function pageAdminDashboard() {
 
   <div class="card">
     <h3>Offline tips</h3>
-    ${tipsData.tips.filter(t => t.area !== 'orders').map(t => `<div class="tip ${t.level === 'warning' ? 'warning' : ''}">${esc(t.message)}</div>`).join('')}
+    ${renderTips(tipsData.tips)}
   </div>
 
   <div class="stat-row">
@@ -483,7 +515,7 @@ async function pageWorkerDashboard() {
 
   <div class="card">
     <h3>Tips</h3>
-    ${tipsData.tips.filter(t => t.area !== 'orders').map(t => `<div class="tip ${t.level === 'warning' ? 'warning' : ''}">${esc(t.message)}</div>`).join('')}
+    ${renderTips(tipsData.tips)}
   </div>
 
   ${me ? (() => { const unit = me.pay_unit || 'unit'; const isCount = unit !== 'unit'; return `
@@ -793,7 +825,7 @@ async function pageInventory() {
       <tr><th>Product</th><th>Size</th><th>Price</th><th>In stock</th>${isAdmin ? '<th></th>' : ''}</tr>
       ${products.map(p => `<tr>
         <td>${esc(p.name)}</td><td>${esc(p.size)}</td><td>${money(p.unit_price)}</td>
-        <td>${p.stock_qty <= p.low_stock_threshold ? `<span class="pill warn">${p.stock_qty}</span>` : p.stock_qty}</td>
+        <td>${p.stock_qty <= p.low_stock_threshold ? `<span class="pill warn">${p.stock_qty}</span>` : p.stock_qty}${p.pack_qty ? ` <span style="color:var(--muted)">(${(p.stock_qty / p.pack_qty).toFixed(1)} ${esc(p.pack_unit_label || 'packet')}s)</span>` : ''}</td>
         ${isAdmin ? `<td><button class="btn secondary" onclick="actions.editProduct(${p.id})">Edit</button></td>` : ''}
       </tr>`).join('')}
     </table></div>
@@ -826,47 +858,95 @@ actions.showNewProductForm = () => {
   document.getElementById('newProdBox').innerHTML = `<div class="card">
     <label>Name (e.g. Paper Bag 1kg)</label><input id="np_name">
     <label>Size label (e.g. 1kg)</label><input id="np_size">
-    <label>Selling price</label><input id="np_price" type="number" step="0.01">
-    <label>Warn when stock falls below</label><input id="np_low" type="number" step="0.01" value="0">
+    <label>Selling price (per piece)</label><input id="np_price" type="number" step="0.01">
+    <label>Packed into units for counting? What's each one called (e.g. packet, bale) - leave blank if counted piece by piece</label><input id="np_pack_label" oninput="actions.onNewProdPackChange()" placeholder="e.g. packet">
+    <label>Usual pieces per unit (leave blank if not)</label><input id="np_pack_qty" type="number" step="1" oninput="actions.onNewProdPackChange()" placeholder="e.g. 100">
+    <div id="np_low_wrap"><label>Warn when stock falls below</label><input id="np_low" type="number" step="0.01" value="0"></div>
     <div id="npMsg"></div>
     <button class="btn block" style="margin-top:8px" onclick="actions.newProduct()">Save</button>
   </div>`;
+};
+actions.onNewProdPackChange = () => {
+  const qty = Number(document.getElementById('np_pack_qty').value) || 0;
+  const label = document.getElementById('np_pack_label').value.trim() || 'packet';
+  document.getElementById('np_low_wrap').innerHTML = qty
+    ? `<label>Warn when stock falls below (in ${esc(label)}s)</label><input id="np_low" type="number" step="0.01" value="0">`
+    : `<label>Warn when stock falls below</label><input id="np_low" type="number" step="0.01" value="0">`;
 };
 actions.newProduct = async () => {
   const name = document.getElementById('np_name').value.trim();
   const size = document.getElementById('np_size').value.trim();
   const unit_price = Number(document.getElementById('np_price').value) || 0;
-  const low_stock_threshold = Number(document.getElementById('np_low').value) || 0;
+  const pack_qty = Number(document.getElementById('np_pack_qty').value) || 0;
+  const lowInput = Number(document.getElementById('np_low').value) || 0;
+  const low_stock_threshold = pack_qty ? lowInput * pack_qty : lowInput;
+  const pack_unit_label = document.getElementById('np_pack_label').value.trim() || null;
   if (!name) { document.getElementById('npMsg').innerHTML = `<div class="msg error">Type a name.</div>`; return; }
   try {
-    await API.post('/inventory/products', { name, size, unit_price, low_stock_threshold });
+    await API.post('/inventory/products', { name, size, unit_price, low_stock_threshold, pack_qty: pack_qty || null, pack_unit_label });
     renderApp();
   } catch (e) { document.getElementById('npMsg').innerHTML = `<div class="msg error">${esc(e.message)}</div>`; }
 };
 actions.editProduct = async (id) => {
   const p = (await API.get('/inventory/products')).find(x => x.id === id);
   if (!p) return;
+  window.__editProduct = p;
   document.getElementById('prodEditBox').innerHTML = `<div class="card">
     <h3>Edit ${esc(p.name)}</h3>
     <label>Name</label><input id="ep_name" value="${esc(p.name)}">
     <label>Size label</label><input id="ep_size" value="${esc(p.size)}">
-    <label>Selling price</label><input id="ep_price" type="number" step="0.01" value="${p.unit_price}">
-    <label>How many are in stock right now</label><input id="ep_stock" type="number" step="1" value="${p.stock_qty}">
-    <label>Warn when stock falls below</label><input id="ep_low" type="number" step="1" value="${p.low_stock_threshold}">
+    <label>Selling price (per piece)</label><input id="ep_price" type="number" step="0.01" value="${p.unit_price}">
+    <label>Packed into units for counting? What's each one called (e.g. packet, bale) - leave blank if counted piece by piece</label><input id="ep_pack_label" value="${esc(p.pack_unit_label || '')}" oninput="actions.onEditProdPackChange()" placeholder="e.g. packet">
+    <label>Usual pieces per unit (leave blank if not)</label><input id="ep_pack_qty" type="number" step="1" value="${p.pack_qty || ''}" oninput="actions.onEditProdPackChange()" placeholder="e.g. 100">
+    <div id="ep_stock_wrap"></div>
+    <div id="ep_low_wrap"></div>
     <div id="epMsg"></div>
     <div class="grid cols-2" style="margin-top:8px">
       <button class="btn" onclick="actions.saveProduct(${id})">Save</button>
       <button class="btn secondary" onclick="document.getElementById('prodEditBox').innerHTML=''">Cancel</button>
     </div>
   </div>`;
+  actions.onEditProdPackChange();
+};
+actions.onEditProdPackChange = () => {
+  const p = window.__editProduct;
+  const label = document.getElementById('ep_pack_label').value.trim() || 'packet';
+  const qty = Number(document.getElementById('ep_pack_qty').value) || 0;
+  if (qty) {
+    const stockUnits = p.stock_qty / qty;
+    const lowUnits = p.low_stock_threshold / qty;
+    document.getElementById('ep_stock_wrap').innerHTML = `
+      <label>How many ${esc(label)}s in stock right now</label>
+      <input id="ep_stock" type="number" step="0.01" value="${stockUnits.toFixed(2)}" oninput="actions.updateEditProdPieceHint()">
+      <p id="ep_stock_hint" style="color:var(--muted);font-size:12px;margin:2px 0 0">= ${p.stock_qty} pieces</p>`;
+    document.getElementById('ep_low_wrap').innerHTML = `
+      <label>Warn when stock falls below (in ${esc(label)}s)</label>
+      <input id="ep_low" type="number" step="0.01" value="${lowUnits.toFixed(2)}">`;
+  } else {
+    document.getElementById('ep_stock_wrap').innerHTML = `
+      <label>How many are in stock right now</label><input id="ep_stock" type="number" step="1" value="${p.stock_qty}">`;
+    document.getElementById('ep_low_wrap').innerHTML = `
+      <label>Warn when stock falls below</label><input id="ep_low" type="number" step="1" value="${p.low_stock_threshold}">`;
+  }
+};
+actions.updateEditProdPieceHint = () => {
+  const qty = Number(document.getElementById('ep_pack_qty').value) || 0;
+  const units = Number(document.getElementById('ep_stock').value) || 0;
+  const hint = document.getElementById('ep_stock_hint');
+  if (hint) hint.textContent = `= ${(units * qty).toFixed(1)} pieces`;
 };
 actions.saveProduct = async (id) => {
+  const packQty = Number(document.getElementById('ep_pack_qty').value) || 0;
+  const stockInput = Number(document.getElementById('ep_stock').value) || 0;
+  const lowInput = Number(document.getElementById('ep_low').value) || 0;
   const body = {
     name: document.getElementById('ep_name').value,
     size: document.getElementById('ep_size').value,
     unit_price: Number(document.getElementById('ep_price').value),
-    stock_qty: Number(document.getElementById('ep_stock').value),
-    low_stock_threshold: Number(document.getElementById('ep_low').value),
+    stock_qty: packQty ? stockInput * packQty : stockInput,
+    low_stock_threshold: packQty ? lowInput * packQty : lowInput,
+    pack_qty: packQty || null,
+    pack_unit_label: document.getElementById('ep_pack_label').value.trim() || null,
   };
   try {
     await API.put('/inventory/products/' + id, body);
@@ -1037,13 +1117,23 @@ async function pageManufacturing() {
 }
 async function pageManufacturingInner() {
   const [products, batches] = await Promise.all([API.get('/inventory/products'), API.get('/production')]);
+  setTimeout(() => { if (document.getElementById('prod_product')) actions.onProdProductChange(); }, 0);
   return `
   <div class="card">
     <h2>Packaging: log bags produced from rolls</h2>
     <label>Product / bag size</label>
-    <select id="prod_product">${products.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.size)})</option>`).join('')}</select>
-    <label>Quantity produced (packets)</label>
-    <input id="prod_qty" type="number" step="1">
+    <select id="prod_product" onchange="actions.onProdProductChange()">${products.map(p => `<option value="${p.id}" data-pack="${p.pack_qty || ''}" data-label="${esc(p.pack_unit_label || 'packet')}">${esc(p.name)} (${esc(p.size)})</option>`).join('')}</select>
+    <label><input type="checkbox" id="prod_use_pack" style="width:auto;display:inline-block;vertical-align:middle" onchange="actions.toggleProdPackFields()"> Measure this in <span id="prod_pack_label">packets</span></label>
+    <div id="prod_pack_field" style="display:none">
+      <label>How many <span id="prod_pack_label2">packets</span></label>
+      <input id="prod_packs" type="number" step="1">
+      <label>Pieces per <span id="prod_pack_label3">packet</span></label>
+      <input id="prod_pack_qty" type="number" step="1" placeholder="e.g. 100">
+    </div>
+    <div id="prod_qty_field">
+      <label>Quantity produced (pieces)</label>
+      <input id="prod_qty" type="number" step="1">
+    </div>
     <label>Shift (guessed from this computer's clock - change it if it's wrong)</label>
     <select id="prod_shift">${['Morning', 'Afternoon', 'Night'].map(s => `<option ${s === guessShift() ? 'selected' : ''}>${s}</option>`).join('')}</select>
     <label>Notes</label>
@@ -1058,15 +1148,42 @@ async function pageManufacturingInner() {
     <div class="table-wrap"><table>
       <tr><th>Date</th><th>Product</th><th>Qty</th><th>Shift</th><th>Operator</th><th>Material cost</th><th>Photo</th></tr>
       ${batches.map(b => `<tr><td>${dt(b.produced_at)}</td><td>${esc(b.product_name)} (${esc(b.size)})</td>
-        <td>${b.qty_produced}</td><td>${esc(b.shift)}</td><td>${esc(b.operator_name || '')}</td><td>${money(b.material_cost)}</td>
+        <td>${b.qty_produced}${b.pack_qty ? ` <span style="color:var(--muted)">(${(b.qty_produced / b.pack_qty).toFixed(1)} ${esc(b.pack_unit_label || 'packet')}s)</span>` : ''}</td>
+        <td>${esc(b.shift)}</td><td>${esc(b.operator_name || '')}</td><td>${money(b.material_cost)}</td>
         <td>${b.photo_path ? `<a href="/uploads/${esc(b.photo_path)}" target="_blank">view</a>` : ''}</td></tr>`).join('')}
     </table></div>
   </div>`;
 }
+actions.onProdProductChange = () => {
+  const opt = document.getElementById('prod_product').selectedOptions[0];
+  const defaultPack = opt ? Number(opt.dataset.pack) : 0;
+  const label = opt ? opt.dataset.label : 'packet';
+  document.getElementById('prod_pack_qty').value = defaultPack || '';
+  document.getElementById('prod_use_pack').checked = !!defaultPack;
+  document.getElementById('prod_pack_label').textContent = label + 's';
+  document.getElementById('prod_pack_label2').textContent = label + 's';
+  document.getElementById('prod_pack_label3').textContent = label;
+  actions.toggleProdPackFields();
+};
+actions.toggleProdPackFields = () => {
+  const usePack = document.getElementById('prod_use_pack').checked;
+  document.getElementById('prod_pack_field').style.display = usePack ? '' : 'none';
+  document.getElementById('prod_qty_field').style.display = usePack ? 'none' : '';
+};
 actions.logProduction = async () => {
+  const usePack = document.getElementById('prod_use_pack').checked;
+  let qty_produced;
+  if (usePack) {
+    const packs = Number(document.getElementById('prod_packs').value) || 0;
+    const packQty = Number(document.getElementById('prod_pack_qty').value) || 0;
+    if (!packs || !packQty) { document.getElementById('prodMsg').innerHTML = `<div class="msg error">Type how many ${document.getElementById('prod_pack_label2').textContent} and pieces per one.</div>`; return; }
+    qty_produced = packs * packQty;
+  } else {
+    qty_produced = document.getElementById('prod_qty').value;
+  }
   const form = new FormData();
   form.append('product_id', document.getElementById('prod_product').value);
-  form.append('qty_produced', document.getElementById('prod_qty').value);
+  form.append('qty_produced', qty_produced);
   form.append('shift', document.getElementById('prod_shift').value);
   form.append('notes', document.getElementById('prod_notes').value);
   const photoInput = document.getElementById('prod_photo');
@@ -1251,13 +1368,23 @@ async function pagePicking() {
 }
 async function pagePickingInner() {
   const [products, logs] = await Promise.all([API.get('/inventory/products'), API.get('/stages/picking')]);
+  setTimeout(() => { if (document.getElementById('pk_product')) actions.onPkProductChange(); }, 0);
   return `
   <div class="card">
     <h2>Log what you collected from Packaging</h2>
     <label>Bag size</label>
-    <select id="pk_product">${products.map(p => `<option value="${p.id}">${esc(p.name)} (${esc(p.size)})</option>`).join('')}</select>
-    <label>How many packets</label>
-    <input id="pk_qty" type="number" step="1">
+    <select id="pk_product" onchange="actions.onPkProductChange()">${products.map(p => `<option value="${p.id}" data-pack="${p.pack_qty || ''}" data-label="${esc(p.pack_unit_label || 'packet')}">${esc(p.name)} (${esc(p.size)})</option>`).join('')}</select>
+    <label><input type="checkbox" id="pk_use_pack" style="width:auto;display:inline-block;vertical-align:middle" onchange="actions.togglePkPackFields()"> Measure this in <span id="pk_pack_label">packets</span></label>
+    <div id="pk_pack_field" style="display:none">
+      <label>How many <span id="pk_pack_label2">packets</span></label>
+      <input id="pk_packs" type="number" step="1">
+      <label>Pieces per <span id="pk_pack_label3">packet</span></label>
+      <input id="pk_pack_qty" type="number" step="1" placeholder="e.g. 100">
+    </div>
+    <div id="pk_qty_field">
+      <label>How many pieces</label>
+      <input id="pk_qty" type="number" step="1">
+    </div>
     <label>Notes</label>
     <input id="pk_notes" placeholder="optional">
     <label>Take a photo</label>
@@ -1274,10 +1401,36 @@ async function pagePickingInner() {
     </table></div>
   </div>`;
 }
+actions.onPkProductChange = () => {
+  const opt = document.getElementById('pk_product').selectedOptions[0];
+  const defaultPack = opt ? Number(opt.dataset.pack) : 0;
+  const label = opt ? opt.dataset.label : 'packet';
+  document.getElementById('pk_pack_qty').value = defaultPack || '';
+  document.getElementById('pk_use_pack').checked = !!defaultPack;
+  document.getElementById('pk_pack_label').textContent = label + 's';
+  document.getElementById('pk_pack_label2').textContent = label + 's';
+  document.getElementById('pk_pack_label3').textContent = label;
+  actions.togglePkPackFields();
+};
+actions.togglePkPackFields = () => {
+  const usePack = document.getElementById('pk_use_pack').checked;
+  document.getElementById('pk_pack_field').style.display = usePack ? '' : 'none';
+  document.getElementById('pk_qty_field').style.display = usePack ? 'none' : '';
+};
 actions.logPicking = async () => {
+  const usePack = document.getElementById('pk_use_pack').checked;
+  let qty;
+  if (usePack) {
+    const packs = Number(document.getElementById('pk_packs').value) || 0;
+    const packQty = Number(document.getElementById('pk_pack_qty').value) || 0;
+    if (!packs || !packQty) { document.getElementById('pkMsg').innerHTML = `<div class="msg error">Type how many ${document.getElementById('pk_pack_label2').textContent} and pieces per one.</div>`; return; }
+    qty = packs * packQty;
+  } else {
+    qty = document.getElementById('pk_qty').value;
+  }
   const form = new FormData();
   form.append('product_id', document.getElementById('pk_product').value);
-  form.append('qty', document.getElementById('pk_qty').value);
+  form.append('qty', qty);
   form.append('notes', document.getElementById('pk_notes').value);
   const photoInput = document.getElementById('pk_photo');
   if (photoInput.files[0]) form.append('photo', photoInput.files[0]);

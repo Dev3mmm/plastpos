@@ -133,8 +133,10 @@ th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: upp
 .cart-row .qty-ctl { display: flex; align-items: center; gap: 6px; }
 .cart-row .qty-ctl button { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border); background: #fff; }
 
-.tip { padding: 10px; border-radius: 8px; margin-bottom: 8px; font-size: 13px; border-left: 4px solid var(--teal); background: #f0fdfa; }
+.tip { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 10px; border-radius: 8px; margin-bottom: 8px; font-size: 13px; border-left: 4px solid var(--teal); background: #f0fdfa; }
 .tip.warning { border-color: var(--danger); }
+.tip-dismiss { flex-shrink: 0; width: 22px; height: 22px; line-height: 20px; padding: 0; border: none; background: transparent; color: var(--muted); font-size: 16px; cursor: pointer; border-radius: 50%; }
+.tip-dismiss:hover { background: rgba(0,0,0,0.08); color: inherit; }
 
 /* Gentle pulse (not a hard strobe, for safety) - red for problems that
    need attention, green for good news like a profit. */
